@@ -2,7 +2,7 @@
 
 Interfaz de escritorio sencilla para [yt-dlp](https://github.com/yt-dlp/yt-dlp) en Windows. Pega una URL, elige calidad y descarga. Está pensada para YouTube, pero acepta cualquier sitio compatible con yt-dlp.
 
-> Estado: MVP funcional. La UI/UX todavía es deliberadamente básica y se trabajará por separado.
+> Estado: MVP funcional con una interfaz de escritorio propia. La siguiente fase es ampliar opciones y pulir detalles.
 
 ## Funciones
 

@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import "@fontsource-variable/bricolage-grotesque";
+import "@fontsource/ibm-plex-mono/latin-400.css";
+import "@fontsource/ibm-plex-mono/latin-500.css";
 import "./App.css";
 import type {
   DownloadRequest,
@@ -11,6 +14,15 @@ import type {
   Settings,
   YtDlpInfo,
 } from "./types";
+import { safeMessage, thumbnailOf } from "./lib/format";
+import { EngineStatus as EngineStatusView } from "./components/EngineStatus";
+import { Icon } from "./components/Icon";
+import { Notice } from "./components/Notice";
+import { QueuePanel } from "./components/QueuePanel";
+import { SettingsDrawer } from "./components/SettingsDrawer";
+import { SetupScreen } from "./components/SetupScreen";
+import { SourcePanel } from "./components/SourcePanel";
+import { TransferPanel } from "./components/TransferPanel";
 
 const STORAGE_KEY = "clipfetch.settings.v1";
 
@@ -22,30 +34,6 @@ const DEFAULT_SETTINGS: Settings = {
   extraArgs: "",
   cookiesMode: "none",
   cookiesPath: "",
-};
-
-const PRESETS = [
-  { value: "best", label: "Mejor calidad" },
-  { value: "1080", label: "MP4 1080p" },
-  { value: "720", label: "MP4 720p" },
-  { value: "480", label: "MP4 480p" },
-  { value: "mp3", label: "MP3 320 kbps" },
-  { value: "audio", label: "Solo audio original" },
-];
-
-const STATUS_LABELS: Record<Job["status"], string> = {
-  queued: "En cola",
-  starting: "Iniciando",
-  downloading: "Descargando",
-  completed: "Completado",
-  error: "Error",
-  cancelled: "Cancelado",
-};
-
-const STAGE_LABELS: Record<string, string> = {
-  "yt-dlp": "yt-dlp",
-  ffmpeg: "FFmpeg",
-  deno: "Deno",
 };
 
 interface JobProgressPayload {
@@ -75,57 +63,6 @@ interface JobLogPayload {
   line: string;
 }
 
-function formatBytes(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) {
-    return "—";
-  }
-  const units = ["B", "KB", "MB", "GB"];
-  let size = value;
-  let unit = 0;
-  while (size >= 1024 && unit < units.length - 1) {
-    size /= 1024;
-    unit += 1;
-  }
-  return `${size.toFixed(size >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
-}
-
-function formatSpeed(value: number | null | undefined): string {
-  if (!value || !Number.isFinite(value)) return "—";
-  return `${formatBytes(value)}/s`;
-}
-
-function formatDuration(value: number | null | undefined): string {
-  if (!value || !Number.isFinite(value)) return "—";
-  const total = Math.round(value);
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const seconds = total % 60;
-  if (hours > 0) {
-    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-  }
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-function formatEta(value: number | null | undefined): string {
-  if (!value || !Number.isFinite(value)) return "—";
-  return formatDuration(value);
-}
-
-function thumbnailOf(info: YtDlpInfo): string | undefined {
-  if (info.thumbnail) return info.thumbnail;
-  const thumbs = info.thumbnails || [];
-  for (let index = thumbs.length - 1; index >= 0; index -= 1) {
-    if (thumbs[index]?.url) return thumbs[index].url;
-  }
-  return undefined;
-}
-
-function safeMessage(error: unknown): string {
-  if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
-
 function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [engine, setEngine] = useState<EngineStatus | null>(null);
@@ -133,6 +70,7 @@ function App() {
   const [engineStage, setEngineStage] = useState("");
   const [enginePercent, setEnginePercent] = useState<number | null>(null);
   const [engineError, setEngineError] = useState("");
+  const [bootError, setBootError] = useState("");
   const [url, setUrl] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [info, setInfo] = useState<YtDlpInfo | null>(null);
@@ -141,39 +79,35 @@ function App() {
   const [isPlaylist, setIsPlaylist] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [globalError, setGlobalError] = useState("");
-  const [showSettings, setShowSettings] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const startingRef = useRef<Set<string>>(new Set());
 
-  useEffect(() => {
-    let disposed = false;
-    const load = async () => {
-      try {
-        const status = await invoke<EngineStatus>("engine_status");
-        const downloadDir = await invoke<string>("default_download_dir").catch(() => "");
-        let loaded: Settings = { ...DEFAULT_SETTINGS };
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (raw) {
-          try {
-            loaded = { ...loaded, ...(JSON.parse(raw) as Partial<Settings>) };
-          } catch {
-            // Ignorar ajustes corruptos.
-          }
+  const loadApp = useCallback(async () => {
+    setBootError("");
+    try {
+      const status = await invoke<EngineStatus>("engine_status");
+      const downloadDir = await invoke<string>("default_download_dir").catch(() => "");
+      let loaded: Settings = { ...DEFAULT_SETTINGS };
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        try {
+          loaded = { ...loaded, ...(JSON.parse(raw) as Partial<Settings>) };
+        } catch {
+          // Ajustes corruptos: se usan los valores por defecto.
         }
-        if (!loaded.outputDir) loaded.outputDir = downloadDir;
-        if (!disposed) {
-          setEngine(status);
-          setSettings(loaded);
-          setPreset(loaded.preset);
-        }
-      } catch (error) {
-        if (!disposed) setGlobalError(safeMessage(error));
       }
-    };
-    void load();
-    return () => {
-      disposed = true;
-    };
+      if (!loaded.outputDir) loaded.outputDir = downloadDir;
+      setEngine(status);
+      setSettings(loaded);
+      setPreset(loaded.preset);
+    } catch (error) {
+      setBootError(safeMessage(error));
+    }
   }, []);
+
+  useEffect(() => {
+    void loadApp();
+  }, [loadApp]);
 
   useEffect(() => {
     if (settings) {
@@ -323,44 +257,32 @@ function App() {
     setSettings((previous) => (previous ? { ...previous, ...patch } : previous));
   };
 
-  const installEngine = async () => {
+  const runEngineTask = async (command: "install_engine" | "update_ytdlp") => {
+    if (engineBusy) return;
     setEngineBusy(true);
     setEngineError("");
     setEnginePercent(0);
-    setEngineStage("Iniciando");
-    const unlisten = await listen<EngineProgress>("engine://progress", (event) => {
-      setEngineStage(event.payload.stage);
-      setEnginePercent(event.payload.percent);
-    });
-    try {
-      const status = await invoke<EngineStatus>("install_engine");
-      setEngine(status);
-      setEnginePercent(100);
-    } catch (error) {
-      setEngineError(safeMessage(error));
-    } finally {
-      unlisten();
-      setEngineBusy(false);
-    }
-  };
+    setEngineStage(command === "update_ytdlp" ? "yt-dlp" : "");
 
-  const updateEngine = async () => {
-    setEngineBusy(true);
-    setEngineError("");
-    setEnginePercent(0);
-    setEngineStage("yt-dlp");
-    const unlisten = await listen<EngineProgress>("engine://progress", (event) => {
-      setEngineStage(event.payload.stage);
-      setEnginePercent(event.payload.percent);
-    });
+    let unlisten: UnlistenFn | undefined;
     try {
-      const status = await invoke<EngineStatus>("update_ytdlp");
+      unlisten = await listen<EngineProgress>("engine://progress", (event) => {
+        setEngineStage(event.payload.stage);
+        setEnginePercent(event.payload.percent);
+      });
+      const status = await invoke<EngineStatus>(command);
       setEngine(status);
       setEnginePercent(100);
+      setEngineStage("");
     } catch (error) {
-      setEngineError(safeMessage(error));
+      const message = safeMessage(error);
+      if (command === "install_engine") {
+        setEngineError(message);
+      } else {
+        setGlobalError(message);
+      }
     } finally {
-      unlisten();
+      unlisten?.();
       setEngineBusy(false);
     }
   };
@@ -387,9 +309,9 @@ function App() {
 
   const queueDownload = () => {
     if (!info || !settings) return;
-    if (!settings.outputDir) {
-      setGlobalError("Selecciona una carpeta de descarga en los ajustes.");
-      setShowSettings(true);
+    if (!settings.outputDir.trim()) {
+      setSettingsOpen(true);
+      setGlobalError("Elige una carpeta de descarga antes de continuar.");
       return;
     }
 
@@ -425,6 +347,9 @@ function App() {
       outputDir: settings.outputDir,
       error: "",
       log: [],
+      thumbnail: thumbnailOf(info),
+      uploader: info.uploader || info.channel,
+      duration: info.duration,
       request,
     };
 
@@ -509,356 +434,205 @@ function App() {
   const activeCount = jobs.filter(
     (job) => job.status === "starting" || job.status === "downloading",
   ).length;
-  const thumbnail = info ? thumbnailOf(info) : undefined;
+
+  if (!settings || !engine) {
+    return <BootScreen error={bootError} onRetry={loadApp} />;
+  }
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <div>
-          <h1>ClipFetch</h1>
-          <p className="muted small">Descargador de video y audio con yt-dlp</p>
-        </div>
-        <div className="topbar-actions">
-          <span className={`engine-pill ${engine?.installed ? "ok" : "warn"}`}>
-            {engine
-              ? engine.installed
-                ? `Motor listo · yt-dlp ${engine.ytdlpVersion}`
-                : "Motor no instalado"
-              : "Comprobando motor…"}
+    <div className="app-shell">
+      <header className="deck-head">
+        <div className="brand">
+          <span className="brand-mark">
+            <Icon name="reel" size={26} />
           </span>
-          <button className="ghost" onClick={() => setShowSettings((value) => !value)}>
-            {showSettings ? "Ocultar ajustes" : "Ajustes"}
-          </button>
-          {engine?.installed && (
-            <button className="ghost" onClick={updateEngine} disabled={engineBusy}>
-              {engineBusy ? "Actualizando…" : "Actualizar yt-dlp"}
+          <span className="brand-name">ClipFetch</span>
+        </div>
+        <div className="head-tools">
+          <EngineStatusView
+            engine={engine}
+            busy={engineBusy}
+            percent={enginePercent}
+            stage={engineStage}
+            onUpdate={() => void runEngineTask("update_ytdlp")}
+          />
+          {engine.installed && (
+            <button
+              type="button"
+              className="button ghost"
+              onClick={() => setSettingsOpen(true)}
+              aria-label="Ajustes"
+            >
+              <Icon name="settings" size={16} />
+              <span className="button-label">Ajustes</span>
             </button>
           )}
         </div>
       </header>
 
-      {globalError && (
-        <div className="alert">
-          <span>{globalError}</span>
-          <button className="link" onClick={() => setGlobalError("")}>
-            Cerrar
-          </button>
-        </div>
-      )}
-
-      {engine && !engine.installed && (
-        <section className="card setup">
-          <div>
-            <h2>Configura el motor</h2>
-            <p>
-              ClipFetch descarga una sola vez yt-dlp, FFmpeg y Deno (~250 MB de
-              descarga, ~450 MB en disco). Se guardan en <code>{engine.dir}</code>.
-            </p>
-            <p className="muted small">
-              Faltan: {engine.missing.join(", ") || "ninguno"}.
-            </p>
-          </div>
-          <div className="setup-actions">
-            {engineBusy && (
-              <div className="engine-progress">
-                <div className="progress-row">
-                  <span>{STAGE_LABELS[engineStage] || engineStage || "Descargando"}</span>
-                  <span>{enginePercent === null ? "" : `${Math.round(enginePercent)}%`}</span>
-                </div>
-                <progress value={enginePercent ?? undefined} max={100} />
-              </div>
-            )}
-            {engineError && <p className="error small">{engineError}</p>}
-            <button className="primary" onClick={installEngine} disabled={engineBusy}>
-              {engineBusy ? "Instalando…" : "Instalar motor"}
-            </button>
-          </div>
-        </section>
-      )}
-
-      {showSettings && settings && (
-        <section className="card settings">
-          <h2>Ajustes</h2>
-          <div className="settings-grid">
-            <label>
-              Carpeta de descargas
-              <div className="row">
-                <input
-                  value={settings.outputDir}
-                  onChange={(event) => updateSettings({ outputDir: event.target.value })}
-                  placeholder="C:\\Users\\TuUsuario\\Downloads"
-                />
-                <button onClick={pickFolder}>Elegir</button>
-              </div>
-            </label>
-
-            <label>
-              Descargas simultáneas
-              <input
-                type="number"
-                min={1}
-                max={5}
-                value={settings.concurrency}
-                onChange={(event) =>
-                  updateSettings({
-                    concurrency: Math.max(1, Math.min(5, Number(event.target.value) || 1)),
-                  })
-                }
-              />
-            </label>
-
-            <label>
-              Límite de velocidad (opcional)
-              <input
-                value={settings.rateLimit}
-                onChange={(event) => updateSettings({ rateLimit: event.target.value })}
-                placeholder="p. ej. 5M"
-              />
-            </label>
-
-            <label>
-              Cookies
-              <select
-                value={settings.cookiesMode}
-                onChange={(event) =>
-                  updateSettings({
-                    cookiesMode: event.target.value as Settings["cookiesMode"],
-                  })
-                }
-              >
-                <option value="none">Sin cookies</option>
-                <option value="firefox">Usar Firefox</option>
-                <option value="file">Archivo cookies.txt</option>
-              </select>
-            </label>
-
-            {settings.cookiesMode === "file" && (
-              <label>
-                Archivo de cookies
-                <div className="row">
-                  <input
-                    value={settings.cookiesPath}
-                    onChange={(event) => updateSettings({ cookiesPath: event.target.value })}
-                    placeholder="C:\\ruta\\cookies.txt"
-                  />
-                  <button onClick={pickCookiesFile}>Elegir</button>
-                </div>
-              </label>
-            )}
-
-            <label className="full">
-              Argumentos extra de yt-dlp (avanzado)
-              <textarea
-                rows={3}
-                value={settings.extraArgs}
-                onChange={(event) => updateSettings({ extraArgs: event.target.value })}
-                placeholder="--embed-metadata --write-subs --sub-langs es"
-              />
-            </label>
-          </div>
-          <p className="muted small">
-            Chrome y Edge en Windows no permiten extraer cookies de forma fiable. Usa
-            Firefox o exporta un <code>cookies.txt</code> con una extensión. La opción
-            <code> --exec</code> está bloqueada por seguridad.
-          </p>
-        </section>
-      )}
-
-      <main>
-        <section className="card search">
-          <form
-            className="url-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void analyze();
-            }}
-          >
-            <input
-              value={url}
-              onChange={(event) => setUrl(event.target.value)}
-              placeholder="Pega una URL de YouTube u otro sitio compatible"
-              spellCheck={false}
-            />
-            <button
-              className="primary"
-              type="submit"
-              disabled={analyzing || !engine?.installed || !url.trim()}
-            >
-              {analyzing ? "Analizando…" : "Analizar"}
-            </button>
-          </form>
-          <p className="muted small">
-            También puedes pegar playlists, canales o URLs de otros sitios soportados
-            por yt-dlp.
-          </p>
-          {analysisError && <p className="error">{analysisError}</p>}
-        </section>
-
-        {info && (
-          <section className="card result">
-            <div className="result-head">
-              {thumbnail && (
-                <img
-                  className="thumb"
-                  src={thumbnail}
-                  alt=""
-                  referrerPolicy="no-referrer"
-                />
-              )}
-              <div className="result-info">
-                <h2>{info.title || info.id || "Sin título"}</h2>
-                <p className="muted">
-                  {[info.uploader || info.channel, formatDuration(info.duration)]
-                    .filter(Boolean)
-                    .join(" · ") || " "}
-                </p>
-                {info._type === "playlist" && (
-                  <p>
-                    Playlist con <strong>{info.entries?.length ?? 0}</strong> elementos.
-                  </p>
-                )}
-              </div>
-            </div>
-
-            <div className="controls">
-              <label>
-                Calidad / formato
-                <select
-                  value={preset}
-                  onChange={(event) => {
-                    setPreset(event.target.value);
-                    updateSettings({ preset: event.target.value });
-                  }}
-                >
-                  {PRESETS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label>
-                Carpeta
-                <div className="row">
-                  <input
-                    value={settings?.outputDir || ""}
-                    onChange={(event) => updateSettings({ outputDir: event.target.value })}
-                  />
-                  <button onClick={pickFolder}>Elegir</button>
-                </div>
-              </label>
-
-              {info._type === "playlist" && (
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={isPlaylist}
-                    onChange={(event) => setIsPlaylist(event.target.checked)}
-                  />
-                  Descargar toda la playlist
-                </label>
-              )}
-
-              <button className="primary" onClick={queueDownload} disabled={!engine?.installed}>
-                Añadir a la cola
-              </button>
-            </div>
-
-            {info._type === "playlist" && info.entries && info.entries.length > 0 && (
-              <details className="entries">
-                <summary>Ver primeros elementos</summary>
-                <ol>
-                  {info.entries.slice(0, 20).map((entry, index) => (
-                    <li key={entry.id || index}>{entry.title || entry.url || "Sin título"}</li>
-                  ))}
-                </ol>
-              </details>
-            )}
-          </section>
-        )}
-
-        <section className="card queue">
-          <div className="section-head">
-            <h2>Cola</h2>
-            <span className="muted small">
-              {jobs.length} elemento{jobs.length === 1 ? "" : "s"} · {activeCount} activo
-              {activeCount === 1 ? "" : "s"}
-            </span>
-          </div>
-          {jobs.length === 0 ? (
-            <p className="muted">Aún no hay descargas. Pega una URL para empezar.</p>
-          ) : (
-            <div className="job-list">
-              {jobs.map((job) => (
-                <JobRow
-                  key={job.id}
-                  job={job}
-                  onCancel={cancelJob}
-                  onRetry={retryJob}
-                  onOpenFolder={openFolder}
-                  onRevealFile={revealFile}
-                />
-              ))}
-            </div>
+      {engine.installed ? (
+        <main className="deck-main">
+          {globalError && (
+            <Notice onClose={() => setGlobalError("")}>{globalError}</Notice>
           )}
-        </section>
-      </main>
+          {engineError && (
+            <Notice
+              kind="error"
+              title="No se pudo actualizar yt-dlp"
+              onClose={() => setEngineError("")}
+            >
+              {engineError}
+            </Notice>
+          )}
 
-      <footer className="footer muted small">
-        ClipFetch es código abierto. Descarga solo contenido propio o con permiso.
+          <section className="intake">
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void analyze();
+              }}
+            >
+              <label htmlFor="source-url">Fuente</label>
+              <div className="intake-row">
+                <div className="intake-field">
+                  <Icon name="film" size={18} />
+                  <input
+                    id="source-url"
+                    value={url}
+                    onChange={(event) => setUrl(event.target.value)}
+                    placeholder="https://www.youtube.com/watch?v=…"
+                    spellCheck={false}
+                    autoFocus
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="button solid"
+                  disabled={analyzing || !url.trim()}
+                >
+                  {analyzing ? "Leyendo…" : "Cargar"}
+                </button>
+              </div>
+            </form>
+            <p className="hint">
+              YouTube, playlists, canales y otros sitios compatibles con yt-dlp.
+            </p>
+          </section>
+
+          {analysisError && (
+            <Notice
+              title="No se pudo leer la URL"
+              onClose={() => setAnalysisError("")}
+            >
+              {analysisError}
+            </Notice>
+          )}
+
+          {info ? (
+            <div className="source-grid">
+              <SourcePanel
+                info={info}
+                thumbnail={thumbnailOf(info)}
+                isPlaylist={isPlaylist}
+                onPlaylistChange={setIsPlaylist}
+              />
+              <TransferPanel
+                preset={preset}
+                onPresetChange={(value) => {
+                  setPreset(value);
+                  updateSettings({ preset: value });
+                }}
+                outputDir={settings.outputDir}
+                onOutputDirChange={(value) => updateSettings({ outputDir: value })}
+                onPickFolder={pickFolder}
+                onDownload={queueDownload}
+                isPlaylist={isPlaylist}
+              />
+            </div>
+          ) : (
+            <section className="empty-deck">
+              <div className="empty-reel" aria-hidden="true">
+                <Icon name="reel" size={30} />
+              </div>
+              <div>
+                <h2>Carga una fuente</h2>
+                <p>
+                  Pega una URL para ver el formato, la calidad y la carpeta antes de
+                  descargar.
+                </p>
+              </div>
+            </section>
+          )}
+
+          <QueuePanel
+            jobs={jobs}
+            activeCount={activeCount}
+            onCancel={cancelJob}
+            onRetry={retryJob}
+            onOpenFolder={openFolder}
+            onRevealFile={revealFile}
+          />
+        </main>
+      ) : (
+        <SetupScreen
+          engine={engine}
+          busy={engineBusy}
+          percent={enginePercent}
+          stage={engineStage}
+          error={engineError}
+          onInstall={() => void runEngineTask("install_engine")}
+        />
+      )}
+
+      <footer className="deck-foot">
+        <span>ClipFetch 0.1.0</span>
+        <span>Código abierto / MIT</span>
+        <span>Descarga solo contenido propio o con permiso.</span>
       </footer>
+
+      {settingsOpen && engine.installed && (
+        <SettingsDrawer
+          open={settingsOpen}
+          settings={settings}
+          onChange={updateSettings}
+          onClose={() => setSettingsOpen(false)}
+          onPickFolder={pickFolder}
+          onPickCookiesFile={pickCookiesFile}
+        />
+      )}
     </div>
   );
 }
 
-interface JobRowProps {
-  job: Job;
-  onCancel: (job: Job) => void;
-  onRetry: (job: Job) => void;
-  onOpenFolder: (path: string) => void;
-  onRevealFile: (path: string) => void;
+interface BootScreenProps {
+  error?: string;
+  onRetry: () => void;
 }
 
-function JobRow({ job, onCancel, onRetry, onOpenFolder, onRevealFile }: JobRowProps) {
-  const canCancel =
-    job.status === "queued" || job.status === "starting" || job.status === "downloading";
-  const canRetry = job.status === "error" || job.status === "cancelled";
-
+function BootScreen({ error, onRetry }: BootScreenProps) {
   return (
-    <article className={`job ${job.status}`}>
-      <div className="job-head">
-        <div className="job-title">
-          <strong>{job.title}</strong>
-          <span className={`badge ${job.status}`}>{STATUS_LABELS[job.status]}</span>
-        </div>
-        <div className="job-actions">
-          {canCancel && <button onClick={() => onCancel(job)}>Cancelar</button>}
-          {canRetry && <button onClick={() => onRetry(job)}>Reintentar</button>}
-          {job.status === "completed" && job.filepath && (
-            <button onClick={() => onRevealFile(job.filepath as string)}>Mostrar archivo</button>
-          )}
-          <button onClick={() => onOpenFolder(job.outputDir)}>Abrir carpeta</button>
-        </div>
+    <div className="boot">
+      <div className="boot-brand">
+        <Icon name="reel" size={34} />
+        <span>ClipFetch</span>
       </div>
-
-      <progress value={job.percent} max={100} />
-      <div className="job-meta muted small">
-        <span>{Math.round(job.percent)}%</span>
-        <span>
-          {formatBytes(job.downloaded)} / {formatBytes(job.total)}
-        </span>
-        <span>{formatSpeed(job.speed)}</span>
-        <span>ETA {formatEta(job.eta)}</span>
-      </div>
-
-      {job.error && <p className="error small">{job.error}</p>}
-
-      <details className="log">
-        <summary>Ver log</summary>
-        <pre>{job.log.length ? job.log.join("\n") : "Sin salida todavía."}</pre>
-      </details>
-    </article>
+      {error ? (
+        <div className="boot-error">
+          <p>No se pudo comprobar el motor.</p>
+          <Notice kind="error">{error}</Notice>
+          <button type="button" className="button" onClick={onRetry}>
+            Reintentar
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="boot-tape" aria-hidden="true">
+            <div className="boot-tape-fill" />
+          </div>
+          <p className="boot-text">Comprobando el motor…</p>
+        </>
+      )}
+    </div>
   );
 }
 

@@ -103,5 +103,8 @@ export interface Job {
   outputDir: string;
   error: string;
   log: string[];
+  thumbnail?: string;
+  uploader?: string;
+  duration?: number | null;
   request: DownloadRequest;
 }

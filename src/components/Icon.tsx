@@ -1,0 +1,137 @@
+export type IconName =
+  | "reel"
+  | "play"
+  | "download"
+  | "folder"
+  | "settings"
+  | "refresh"
+  | "close"
+  | "alert"
+  | "info"
+  | "check"
+  | "chevron"
+  | "external"
+  | "film";
+
+interface IconProps {
+  name: IconName;
+  size?: number;
+  strokeWidth?: number;
+  className?: string;
+}
+
+export function Icon({ name, size = 16, strokeWidth = 1.7, className }: IconProps) {
+  const common = {
+    width: size,
+    height: size,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+    className,
+  };
+
+  switch (name) {
+    case "reel":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="10" />
+          <circle cx="12" cy="12" r="3.4" />
+          <circle cx="12" cy="5.9" r="2" />
+          <circle cx="17.3" cy="15.2" r="2" />
+          <circle cx="6.7" cy="15.2" r="2" />
+        </svg>
+      );
+    case "play":
+      return (
+        <svg {...common} fill="currentColor" stroke="none">
+          <path d="M8.2 5.4v13.2L19 12 8.2 5.4Z" />
+        </svg>
+      );
+    case "download":
+      return (
+        <svg {...common}>
+          <path d="M12 3v12" />
+          <path d="m7 10 5 5 5-5" />
+          <path d="M4 20h16" />
+        </svg>
+      );
+    case "folder":
+      return (
+        <svg {...common}>
+          <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5v-10Z" />
+        </svg>
+      );
+    case "settings":
+      return (
+        <svg {...common}>
+          <path d="M4 7h16M4 12h16M4 17h16" />
+          <circle cx="9" cy="7" r="2" />
+          <circle cx="15" cy="12" r="2" />
+          <circle cx="7" cy="17" r="2" />
+        </svg>
+      );
+    case "refresh":
+      return (
+        <svg {...common}>
+          <path d="M20 11a8 8 0 0 0-14.9-4" />
+          <path d="M4 5v5h5" />
+          <path d="M4 13a8 8 0 0 0 14.9 4" />
+          <path d="M20 19v-5h-5" />
+        </svg>
+      );
+    case "close":
+      return (
+        <svg {...common}>
+          <path d="M6 6l12 12M18 6 6 18" />
+        </svg>
+      );
+    case "alert":
+      return (
+        <svg {...common}>
+          <path d="M12 3.5 21 19H3L12 3.5Z" />
+          <path d="M12 9v4" />
+          <path d="M12 16.5h.01" />
+        </svg>
+      );
+    case "info":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 11v5" />
+          <path d="M12 8h.01" />
+        </svg>
+      );
+    case "check":
+      return (
+        <svg {...common}>
+          <path d="m5 12 4.5 4.5L19 7" />
+        </svg>
+      );
+    case "chevron":
+      return (
+        <svg {...common}>
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      );
+    case "external":
+      return (
+        <svg {...common}>
+          <path d="M14 4h6v6" />
+          <path d="m20 4-8 8" />
+          <path d="M19 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" />
+        </svg>
+      );
+    case "film":
+      return (
+        <svg {...common}>
+          <rect x="3" y="5" width="18" height="14" rx="1" />
+          <path d="M7 5v14M17 5v14" />
+          <path d="M7 8h.01M7 12h.01M7 16h.01M17 8h.01M17 12h.01M17 16h.01" />
+        </svg>
+      );
+  }
+}

@@ -1,5 +1,6 @@
 import type { Job, JobStatus } from "../types";
 import { formatBytes, formatEta, formatSpeed } from "../lib/format";
+import { entryLabel, filesLabel } from "../lib/progress";
 import { Icon } from "./Icon";
 
 interface QueuePanelProps {
@@ -86,6 +87,8 @@ function JobRow({
     job.status === "queued" || job.status === "starting" || job.status === "downloading";
   const canRetry = job.status === "error" || job.status === "cancelled";
   const percent = Math.max(0, Math.min(100, job.percent));
+  const files = filesLabel(job);
+  const entry = entryLabel(job);
   const tapeClass =
     job.status === "completed"
       ? "is-complete"
@@ -115,7 +118,9 @@ function JobRow({
           </div>
           <span className={`status ${job.status}`}>
             <span className="status-dot" aria-hidden="true" />
-            {STATUS_LABELS[job.status]}
+            {job.skipped && job.status === "completed"
+              ? "Ya existía"
+              : STATUS_LABELS[job.status]}
           </span>
         </div>
 
@@ -139,6 +144,10 @@ function JobRow({
           </span>
           <span>{formatSpeed(job.speed)}</span>
           <span>ETA {formatEta(job.eta)}</span>
+          {entry && <span className="job-tag">vídeo {entry}</span>}
+          {files && job.status === "downloading" && (
+            <span className="job-tag">archivo {files}</span>
+          )}
         </div>
 
         {job.error && <p className="job-error">{job.error}</p>}

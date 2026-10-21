@@ -1,6 +1,8 @@
 export type IconName =
   | "reel"
   | "play"
+  | "pause"
+  | "cut"
   | "download"
   | "folder"
   | "settings"
@@ -49,6 +51,22 @@ export function Icon({ name, size = 16, strokeWidth = 1.7, className }: IconProp
       return (
         <svg {...common} fill="currentColor" stroke="none">
           <path d="M8.2 5.4v13.2L19 12 8.2 5.4Z" />
+        </svg>
+      );
+    case "pause":
+      return (
+        <svg {...common} fill="currentColor" stroke="none">
+          <rect x="7" y="5" width="3.6" height="14" rx="0.6" />
+          <rect x="13.4" y="5" width="3.6" height="14" rx="0.6" />
+        </svg>
+      );
+    case "cut":
+      return (
+        <svg {...common}>
+          <circle cx="6" cy="6.5" r="2.4" />
+          <circle cx="6" cy="17.5" r="2.4" />
+          <path d="M8.1 8 20 17.5" />
+          <path d="M8.1 16 20 6.5" />
         </svg>
       );
     case "download":

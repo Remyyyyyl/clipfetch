@@ -31,6 +31,8 @@ pub struct DownloadRequest {
     pub rate_limit: Option<String>,
     pub playlist_items: Option<String>,
     pub extra_args: Option<String>,
+    pub clip_start: Option<u32>,
+    pub clip_end: Option<u32>,
 }
 
 fn hide_console_std(cmd: &mut std::process::Command) {
@@ -125,10 +127,99 @@ fn preset_args(preset: &str) -> Result<Vec<String>, String> {
     Ok(args.into_iter().map(str::to_string).collect())
 }
 
+fn format_clock(seconds: u32) -> String {
+    format!(
+        "{:02}:{:02}:{:02}",
+        seconds / 3600,
+        (seconds % 3600) / 60,
+        seconds % 60
+    )
+}
+
+/// Prefijo del archivo: `00-01-30_00-02-45`.
+fn clip_label(start: u32, end: u32) -> String {
+    let start = format_clock(start).replace(':', "-");
+    let end = format_clock(end).replace(':', "-");
+    format!("{start}_{end}")
+}
+
+fn clip_range(req: &DownloadRequest) -> Result<Option<(u32, u32)>, String> {
+    match (req.clip_start, req.clip_end) {
+        (None, None) => Ok(None),
+        (Some(start), Some(end)) if end > start => Ok(Some((start, end))),
+        _ => Err("El tramo no es válido: el fin debe ser mayor que el inicio.".to_string()),
+    }
+}
+
+/// Argumentos que la app usa para construir su propio flujo: si el usuario los
+/// repite en «argumentos extra» puede romper el parseo o escribir fuera de la
+/// carpeta elegida.
+const RESERVED_ARGS: &[&str] = &[
+    "--exec",
+    "--exec-before-download",
+    "-o",
+    "--output",
+    "-P",
+    "--paths",
+    "--config-location",
+    "--config-locations",
+    "--download-archive",
+    "-a",
+    "--batch-file",
+    "--load-info-json",
+    "--cookies",
+    "--cookies-from-browser",
+    "--print",
+    "--print-to-file",
+    "-O",
+    "--progress-template",
+    "--newline",
+    "-J",
+    "--dump-json",
+    "--dump-single-json",
+    "--ffmpeg-location",
+    "--js-runtimes",
+];
+
+fn reject_reserved_args(extra: &[String]) -> Result<(), String> {
+    for arg in extra {
+        let flag = arg.split('=').next().unwrap_or(arg.as_str());
+        if RESERVED_ARGS.contains(&flag) {
+            return Err(format!(
+                "El argumento {flag} lo controla ClipFetch y no se puede cambiar desde aquí."
+            ));
+        }
+        if flag.starts_with("--") {
+            continue;
+        }
+        // Formas cortas pegadas al valor: -oRUTA, -Pruta, -aarchivo, -Oplantilla.
+        if let Some(short) = ["-o", "-P", "-a", "-O"]
+            .into_iter()
+            .find(|short| flag.len() > short.len() && flag.starts_with(*short))
+        {
+            return Err(format!(
+                "El argumento {short} lo controla ClipFetch y no se puede cambiar desde aquí."
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn build_args(dir: &Path, req: &DownloadRequest) -> Result<Vec<String>, String> {
     if req.output_dir.trim().is_empty() {
         return Err("Selecciona una carpeta de descarga".to_string());
     }
+
+    let clip = clip_range(req)?;
+    // Con recorte, el vídeo va en su propia carpeta y cada archivo lleva el
+    // tramo como prefijo para no chocar con la descarga completa.
+    let output_template = match clip {
+        Some((start, end)) => format!(
+            "%(title)s/{} %(title)s [%(id)s].%(ext)s",
+            clip_label(start, end)
+        ),
+        None => "%(title)s [%(id)s].%(ext)s".to_string(),
+    };
 
     let mut args: Vec<String> = vec![
         "--ignore-config".into(),
@@ -144,6 +235,9 @@ fn build_args(dir: &Path, req: &DownloadRequest) -> Result<Vec<String>, String> 
         PROGRESS_TEMPLATE.into(),
         "--print".into(),
         "after_move:FILE|%(filepath)s".into(),
+        "--no-simulate".into(),
+        "--print".into(),
+        "before_dl:PLAN|%(format_id)s".into(),
         "--no-overwrites".into(),
         "--windows-filenames".into(),
         "--trim-filenames".into(),
@@ -157,10 +251,15 @@ fn build_args(dir: &Path, req: &DownloadRequest) -> Result<Vec<String>, String> 
         "-P".into(),
         req.output_dir.clone(),
         "-o".into(),
-        "%(title)s [%(id)s].%(ext)s".into(),
+        output_template,
     ];
 
     args.extend(preset_args(&req.preset)?);
+
+    if let Some((start, end)) = clip {
+        args.push("--download-sections".into());
+        args.push(format!("*{}-{}", format_clock(start), format_clock(end)));
+    }
 
     if req.is_playlist {
         args.push("--yes-playlist".into());
@@ -201,12 +300,7 @@ fn build_args(dir: &Path, req: &DownloadRequest) -> Result<Vec<String>, String> 
     {
         let extra = shell_words::split(extra)
             .map_err(|e| format!("No se pudieron leer los argumentos extra: {e}"))?;
-        if extra
-            .iter()
-            .any(|arg| arg == "--exec" || arg.starts_with("--exec="))
-        {
-            return Err("--exec no está permitido por seguridad".to_string());
-        }
+        reject_reserved_args(&extra)?;
         args.extend(extra);
     }
 
@@ -254,7 +348,7 @@ async fn run_json(
         .kill_on_drop(true);
     hide_console_tokio(&mut cmd);
 
-    let output = tokio::time::timeout(Duration::from_secs(90), cmd.output())
+    let output = tokio::time::timeout(Duration::from_secs(300), cmd.output())
         .await
         .map_err(|_| "yt-dlp tardó demasiado en responder. Prueba otra URL o revisa tu conexión.".to_string())?
         .map_err(|e| format!("No se pudo ejecutar yt-dlp: {e}"))?;
@@ -511,6 +605,17 @@ async fn read_stdout(app: AppHandle, job_id: String, stdout: ChildStdout) -> Opt
 
         if let Some(rest) = line.strip_prefix("PROGRESS|") {
             emit_progress(&app, &job_id, rest);
+        } else if let Some(rest) = line.strip_prefix("PLAN|") {
+            let format_id = rest.trim();
+            let files = format_id
+                .split('+')
+                .filter(|part| !part.trim().is_empty())
+                .count()
+                .max(1);
+            let _ = app.emit(
+                "job://plan",
+                serde_json::json!({ "jobId": job_id, "files": files, "formatId": format_id }),
+            );
         } else if let Some(path) = line.strip_prefix("FILE|") {
             let path = path.trim().to_string();
             filepath = Some(path.clone());
@@ -549,4 +654,101 @@ async fn read_stderr(app: AppHandle, job_id: String, stderr: ChildStderr) -> Vec
     }
 
     tail.into_iter().collect()
+}
+
+/// Formato único con audio y vídeo para poder reproducirlo en el `<video>`.
+const PREVIEW_FORMAT: &str =
+    "best[ext=mp4][vcodec!=none][acodec!=none]/best[acodec!=none][vcodec!=none]";
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewStream {
+    pub url: String,
+}
+
+/// Devuelve una URL directa y efímera para ver el vídeo sin descargarlo.
+/// No es el archivo final: sirve para situarse en la línea de tiempo.
+#[tauri::command]
+pub async fn preview_stream(
+    app: AppHandle,
+    url: String,
+    cookies_mode: String,
+    cookies_path: Option<String>,
+) -> Result<PreviewStream, String> {
+    if url.trim().is_empty() {
+        return Err("Falta la URL del vídeo.".to_string());
+    }
+
+    let dir = engine::engine_dir(&app)?;
+    let ytdlp = dir.join("yt-dlp.exe");
+    if !ytdlp.exists() {
+        return Err("El motor no está instalado. Instálalo desde la pantalla de inicio.".to_string());
+    }
+
+    let mut cmd = Command::new(&ytdlp);
+    cmd.arg("--ignore-config")
+        .arg("--encoding")
+        .arg("utf-8")
+        .arg("--color")
+        .arg("never")
+        .arg("--no-warnings")
+        .arg("--no-playlist")
+        .arg("-g")
+        .arg("-f")
+        .arg(PREVIEW_FORMAT)
+        .arg("--ffmpeg-location")
+        .arg(&dir)
+        .arg("--js-runtimes")
+        .arg(format!("deno:{}", dir.to_string_lossy()));
+    for arg in cookie_args(&cookies_mode, cookies_path.as_deref())? {
+        cmd.arg(arg);
+    }
+    cmd.arg("--")
+        .arg(url.trim())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    hide_console_tokio(&mut cmd);
+
+    let output = tokio::time::timeout(Duration::from_secs(60), cmd.output())
+        .await
+        .map_err(|_| "yt-dlp tardó demasiado en preparar la vista previa.".to_string())?
+        .map_err(|e| format!("No se pudo ejecutar yt-dlp: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .rev()
+            .take(8)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(if detail.is_empty() {
+            "No se pudo preparar la vista previa.".to_string()
+        } else {
+            format!("No se pudo preparar la vista previa:\n{detail}")
+        });
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let link = stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("http"))
+        .ok_or_else(|| "yt-dlp no devolvió una URL reproducible.".to_string())?;
+
+    if link.contains(".m3u8") {
+        return Err(
+            "Este sitio solo ofrece HLS; la vista previa no está disponible aquí.".to_string(),
+        );
+    }
+
+    Ok(PreviewStream {
+        url: link.to_string(),
+    })
 }

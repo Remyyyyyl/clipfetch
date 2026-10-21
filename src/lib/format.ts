@@ -49,6 +49,17 @@ export function formatEta(value: number | null | undefined): string {
   return formatDuration(value);
 }
 
+/** Reloj de edición: siempre `HH:MM:SS`, sin abreviar. */
+export function formatClock(value: number | null | undefined): string {
+  const total = Math.max(0, Math.round(Number(value) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  return [hours, minutes, seconds]
+    .map((part) => String(part).padStart(2, "0"))
+    .join(":");
+}
+
 export function formatCount(value: number | null | undefined): string {
   if (!value || !Number.isFinite(value)) return "";
   return new Intl.NumberFormat("es", {

@@ -9,6 +9,9 @@ interface TransferPanelProps {
   onPickFolder: () => void;
   onDownload: () => void;
   isPlaylist: boolean;
+  selectedCount: number;
+  playlistTotal: number;
+  clipCount: number;
 }
 
 export function TransferPanel({
@@ -19,7 +22,17 @@ export function TransferPanel({
   onPickFolder,
   onDownload,
   isPlaylist,
+  selectedCount,
+  playlistTotal,
+  clipCount,
 }: TransferPanelProps) {
+  const selectionEmpty = isPlaylist && selectedCount === 0;
+  const scope = isPlaylist
+    ? `Playlist · ${selectedCount} de ${playlistTotal}`
+    : clipCount > 0
+      ? `${clipCount} ${clipCount === 1 ? "tramo" : "tramos"}`
+      : "Un vídeo";
+
   return (
     <article className="panel transfer-panel">
       <header className="panel-head">
@@ -73,17 +86,34 @@ export function TransferPanel({
         </div>
         <div>
           <span>Alcance</span>
-          <strong>{isPlaylist ? "Playlist completa" : "Un video"}</strong>
+          <strong>{scope}</strong>
         </div>
       </div>
 
-      <button type="button" className="record-button" onClick={onDownload}>
+      <button
+        type="button"
+        className="record-button"
+        onClick={onDownload}
+        disabled={selectionEmpty}
+      >
         <span className="record-light" aria-hidden="true" />
-        <span>Descargar</span>
+        <span>
+          {clipCount > 0
+            ? `Descargar ${clipCount} ${clipCount === 1 ? "tramo" : "tramos"}`
+            : "Descargar"}
+        </span>
         <Icon name="download" size={17} />
       </button>
 
-      <p className="hint">Se añade a la cola y empieza cuando haya hueco.</p>
+      <p className="hint">
+        {selectionEmpty ? (
+          <span className="hint-warn">Selecciona al menos un vídeo de la lista.</span>
+        ) : clipCount > 0 ? (
+          "Un trabajo por tramo, en una carpeta con el nombre del vídeo."
+        ) : (
+          "Se añade a la cola y empieza cuando haya hueco."
+        )}
+      </p>
     </article>
   );
 }

@@ -1,0 +1,556 @@
+:root {
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  color: #1d2433;
+  background: #f3f5f8;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  min-height: 100vh;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  border: 1px solid #c8d0dc;
+  background: #ffffff;
+  color: inherit;
+  border-radius: 8px;
+  padding: 0.5rem 0.8rem;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: #eef2f7;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: #2457d6;
+  border-color: #2457d6;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  background: #1d47b5;
+}
+
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+}
+
+button.link {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-decoration: underline;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  border: 1px solid #c8d0dc;
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  background: #ffffff;
+  color: inherit;
+}
+
+textarea {
+  resize: vertical;
+}
+
+code {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 0.9em;
+  background: #e8edf4;
+  border-radius: 4px;
+  padding: 0.1rem 0.3rem;
+}
+
+.app {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.25rem 0.15rem;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 1.6rem;
+  letter-spacing: -0.02em;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.engine-pill {
+  font-size: 0.78rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  max-width: 330px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.engine-pill.ok {
+  background: #e4f5e9;
+  border-color: #b8e2c4;
+  color: #1f6b3a;
+}
+
+.engine-pill.warn {
+  background: #fff2d9;
+  border-color: #f0d29a;
+  color: #805200;
+}
+
+.card {
+  background: #ffffff;
+  border: 1px solid #dde3ec;
+  border-radius: 14px;
+  padding: 1rem;
+  box-shadow: 0 1px 2px rgba(22, 34, 51, 0.04);
+}
+
+.card h2 {
+  margin: 0 0 0.55rem;
+  font-size: 1.05rem;
+}
+
+.muted {
+  color: #647188;
+}
+
+.small {
+  font-size: 0.84rem;
+}
+
+.error {
+  color: #b42318;
+}
+
+.alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: #fff0ee;
+  border: 1px solid #f3c2bc;
+  color: #8f1d14;
+  border-radius: 10px;
+  padding: 0.65rem 0.8rem;
+  white-space: pre-wrap;
+}
+
+.setup {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  border-color: #f0d29a;
+  background: #fffcf5;
+}
+
+.setup h2 {
+  margin-top: 0;
+}
+
+.setup-actions {
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.engine-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.progress-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  color: #647188;
+}
+
+progress {
+  width: 100%;
+  height: 9px;
+  border: 0;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #e8edf4;
+}
+
+progress::-webkit-progress-bar {
+  background: #e8edf4;
+  border-radius: 999px;
+}
+
+progress::-webkit-progress-value {
+  background: #2457d6;
+  border-radius: 999px;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.settings-grid label,
+.controls label,
+.search label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.settings-grid .full {
+  grid-column: 1 / -1;
+}
+
+.row {
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.url-form {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.url-form input {
+  flex: 1;
+}
+
+.result-head {
+  display: flex;
+  gap: 0.9rem;
+  align-items: flex-start;
+}
+
+.thumb {
+  width: 190px;
+  max-width: 38%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 10px;
+  background: #e8edf4;
+}
+
+.result-info h2 {
+  margin: 0 0 0.3rem;
+  font-size: 1.15rem;
+}
+
+.result-info p {
+  margin: 0.2rem 0;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr;
+  gap: 0.8rem;
+  align-items: end;
+  margin-top: 0.9rem;
+}
+
+.controls .check {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.45rem;
+  font-weight: 500;
+}
+
+.controls .check input {
+  width: auto;
+}
+
+.controls button.primary {
+  justify-self: start;
+}
+
+.entries {
+  margin-top: 0.9rem;
+}
+
+.entries summary {
+  cursor: pointer;
+  font-size: 0.86rem;
+  color: #647188;
+}
+
+.entries ol {
+  margin: 0.5rem 0 0;
+  padding-left: 1.4rem;
+  color: #3b4759;
+}
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.6rem;
+}
+
+.section-head h2 {
+  margin: 0;
+}
+
+.job-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.job {
+  border: 1px solid #e3e8f0;
+  border-radius: 10px;
+  padding: 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.job.completed {
+  border-color: #b8e2c4;
+}
+
+.job.error {
+  border-color: #f3c2bc;
+}
+
+.job-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.job-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.job-title strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-actions {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.job-actions button {
+  font-size: 0.78rem;
+  padding: 0.3rem 0.5rem;
+}
+
+.job-meta {
+  display: flex;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+}
+
+.badge {
+  font-size: 0.7rem;
+  border-radius: 999px;
+  padding: 0.12rem 0.45rem;
+  background: #eef2f7;
+  color: #4a586d;
+  white-space: nowrap;
+}
+
+.badge.downloading,
+.badge.starting {
+  background: #e5ecff;
+  color: #2457d6;
+}
+
+.badge.completed {
+  background: #e4f5e9;
+  color: #1f6b3a;
+}
+
+.badge.error {
+  background: #fff0ee;
+  color: #b42318;
+}
+
+.badge.cancelled {
+  background: #f1f2f4;
+  color: #647188;
+}
+
+.log summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: #647188;
+}
+
+.log pre {
+  max-height: 220px;
+  overflow: auto;
+  background: #10151d;
+  color: #d9e2ef;
+  border-radius: 8px;
+  padding: 0.6rem;
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.footer {
+  text-align: center;
+  padding: 0.25rem 0 1rem;
+}
+
+@media (max-width: 760px) {
+  .settings-grid,
+  .controls {
+    grid-template-columns: 1fr;
+  }
+
+  .setup {
+    flex-direction: column;
+  }
+
+  .result-head {
+    flex-direction: column;
+  }
+
+  .thumb {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .url-form {
+    flex-direction: column;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #e6ebf3;
+    background: #141922;
+  }
+
+  .card {
+    background: #1b222d;
+    border-color: #2c3645;
+    box-shadow: none;
+  }
+
+  .engine-pill.ok {
+    background: #173525;
+    border-color: #24583a;
+    color: #9be0b4;
+  }
+
+  .engine-pill.warn {
+    background: #3a2b12;
+    border-color: #5c451d;
+    color: #f1ce8b;
+  }
+
+  .alert,
+  .job.error {
+    background: #3a1c1a;
+    border-color: #6e2b27;
+    color: #ffb4ad;
+  }
+
+  .setup {
+    background: #241f14;
+    border-color: #5c451d;
+  }
+
+  button {
+    background: #232c39;
+    border-color: #39465a;
+  }
+
+  button:hover:not(:disabled) {
+    background: #2c3747;
+  }
+
+  input,
+  select,
+  textarea {
+    background: #141a23;
+    border-color: #39465a;
+  }
+
+  code {
+    background: #2a3442;
+  }
+
+  .job {
+    border-color: #2c3645;
+  }
+
+  .badge {
+    background: #2a3442;
+    color: #b7c3d6;
+  }
+}

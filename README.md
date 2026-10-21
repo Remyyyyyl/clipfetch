@@ -2,6 +2,25 @@
 
 Interfaz de escritorio sencilla para [yt-dlp](https://github.com/yt-dlp/yt-dlp) en Windows. Pega una URL, elige calidad y descarga. Está pensada para YouTube, pero acepta cualquier sitio compatible con yt-dlp.
 
+## Descargar e instalar
+
+1. Entra en [Releases](https://github.com/Remyyyyyl/clipfetch/releases/latest) y descarga `ClipFetch_0.1.0_x64-setup.exe`.
+2. Ejecuta el instalador. Se instala por usuario y no pide permisos de administrador.
+3. Abre ClipFetch y pulsa **Instalar motor**. La app descarga yt-dlp, FFmpeg y Deno (~250 MB de descarga; ~450 MB en disco).
+4. Pega una URL, elige la calidad y la carpeta, y pulsa **Descargar**.
+
+**Requisitos:** Windows 10 u 11 de 64 bits y conexión a internet la primera vez. WebView2 suele estar incluido; si falta, el instalador lo descarga.
+
+**SmartScreen:** el instalador no está firmado. Si Windows muestra una advertencia, pulsa **Más información** y luego **Ejecutar de todas formas**.
+
+**Desinstalar:** Configuración → Aplicaciones → ClipFetch. Los archivos descargados se conservan.
+
+SHA-256 del instalador 0.1.0:
+
+```text
+68fb44b9c5aba547a17d35b864f96199cb1baed14bfd3006a3dde5aba087272e
+```
+
 > Estado: MVP funcional con una interfaz de escritorio propia. La siguiente fase es ampliar opciones y pulir detalles.
 
 ## Funciones
@@ -14,15 +33,7 @@ Interfaz de escritorio sencilla para [yt-dlp](https://github.com/yt-dlp/yt-dlp) 
 - Argumentos extra de yt-dlp para usuarios avanzados.
 - Motor descargado y actualizado por la app: yt-dlp nightly, FFmpeg y Deno.
 
-## Requisitos
-
-Para usar el instalador:
-
-- Windows 10 u 11 de 64 bits.
-- WebView2 (incluido en Windows 11 y en la mayoría de Windows 10; el instalador puede descargarlo).
-- Conexión a internet la primera vez, para descargar el motor (~250 MB de descarga, ~450 MB en disco).
-
-Para desarrollar:
+## Requisitos de desarrollo
 
 - Node.js 22 o superior.
 - Rust estable con toolchain MSVC.

@@ -1,6 +1,6 @@
 [package]
 name = "clipfetch"
-version = "0.1.0"
+version = "0.2.0"
 description = "A simple desktop video downloader powered by yt-dlp"
 authors = ["ClipFetch contributors"]
 edition = "2024"

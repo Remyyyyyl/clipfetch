@@ -6,6 +6,7 @@ export const SETTINGS_VERSION = 1;
 export const DEFAULT_SETTINGS: Settings = {
   outputDir: "",
   preset: "best",
+  audioPreset: "mp3-320",
   concurrency: 2,
   rateLimit: "",
   extraArgs: "",
@@ -28,6 +29,7 @@ function sanitize(value: unknown): Settings | null {
   return {
     outputDir: asString(raw.outputDir, DEFAULT_SETTINGS.outputDir),
     preset: asString(raw.preset, DEFAULT_SETTINGS.preset),
+    audioPreset: asString(raw.audioPreset, DEFAULT_SETTINGS.audioPreset),
     concurrency: Number.isFinite(concurrency)
       ? Math.min(8, Math.max(1, Math.round(concurrency)))
       : DEFAULT_SETTINGS.concurrency,

@@ -3,6 +3,10 @@ export type IconName =
   | "play"
   | "pause"
   | "cut"
+  | "music"
+  | "grip"
+  | "export"
+  | "trash"
   | "download"
   | "folder"
   | "settings"
@@ -67,6 +71,36 @@ export function Icon({ name, size = 16, strokeWidth = 1.7, className }: IconProp
           <circle cx="6" cy="17.5" r="2.4" />
           <path d="M8.1 8 20 17.5" />
           <path d="M8.1 16 20 6.5" />
+        </svg>
+      );
+    case "music":
+      return (
+        <svg {...common}>
+          <path d="M9 18V6l10-2v12" />
+          <circle cx="6.5" cy="18" r="2.5" />
+          <circle cx="16.5" cy="16" r="2.5" />
+        </svg>
+      );
+    case "grip":
+      return (
+        <svg {...common} strokeWidth={2.6}>
+          <path d="M9 6h.01M9 12h.01M9 18h.01M15 6h.01M15 12h.01M15 18h.01" />
+        </svg>
+      );
+    case "export":
+      return (
+        <svg {...common}>
+          <path d="M12 16V4" />
+          <path d="m7 9 5-5 5 5" />
+          <path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+        </svg>
+      );
+    case "trash":
+      return (
+        <svg {...common}>
+          <path d="M4 7h16" />
+          <path d="M9 7V5h6v2" />
+          <path d="m6.5 7 1 13h9l1-13" />
         </svg>
       );
     case "download":

@@ -7,7 +7,6 @@ import "@fontsource/ibm-plex-mono/latin-400.css";
 import "@fontsource/ibm-plex-mono/latin-500.css";
 import "./App.css";
 import type {
-  Clip,
   DownloadRequest,
   EngineProgress,
   EngineStatus,
@@ -17,24 +16,30 @@ import type {
   PreviewState,
   PreviewStream,
   Settings,
+  StagedItem,
+  ToolKind,
   YtDlpInfo,
 } from "./types";
-import { formatClock, safeMessage, thumbnailOf } from "./lib/format";
+import {
+  AUDIO_PRESETS,
+  VIDEO_PRESETS,
+  formatClock,
+  safeMessage,
+  thumbnailOf,
+} from "./lib/format";
 import { loadSettings, saveSettings } from "./lib/settings";
 import { loadHistory, saveHistory } from "./lib/history";
 import { useFileStorage } from "./lib/persistence";
 import { buildPlaylistItems, entryPositions, isFullSelection } from "./lib/playlist";
 import { aggregateProgress, applyPlan } from "./lib/progress";
 import { LogBuffer } from "./lib/logBuffer";
-import { EngineStatus as EngineStatusView } from "./components/EngineStatus";
 import { Icon } from "./components/Icon";
 import { Notice } from "./components/Notice";
-import { QueuePanel } from "./components/QueuePanel";
+import { QueueRail } from "./components/QueueRail";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { SetupScreen } from "./components/SetupScreen";
-import { SourcePanel } from "./components/SourcePanel";
-import { TimelineEditor } from "./components/TimelineEditor";
-import { TransferPanel } from "./components/TransferPanel";
+import { ToolWorkspace } from "./components/ToolWorkspace";
+import { TopBar } from "./components/TopBar";
 
 const MAX_LOG_LINES = 400;
 const ALREADY_DOWNLOADED = /\[download\]\s+(.+?)\s+has already been downloaded/i;
@@ -75,22 +80,24 @@ function App() {
   const [engineError, setEngineError] = useState("");
   const [engineUpdate, setEngineUpdate] = useState<EngineUpdate | null>(null);
   const [bootError, setBootError] = useState("");
+
+  const [tool, setTool] = useState<ToolKind>("video");
+  const [mode, setMode] = useState<"simple" | "advanced">("simple");
   const [url, setUrl] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeSince, setAnalyzeSince] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [info, setInfo] = useState<YtDlpInfo | null>(null);
   const [analysisError, setAnalysisError] = useState("");
-  const [preset, setPreset] = useState("best");
-  const [isPlaylist, setIsPlaylist] = useState(false);
   const [selection, setSelection] = useState<Set<number>>(() => new Set());
+  const [preview, setPreview] = useState<PreviewState>({ status: "idle" });
+  const [staged, setStaged] = useState<StagedItem[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [globalError, setGlobalError] = useState("");
   const [globalInfo, setGlobalInfo] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [clips, setClips] = useState<Clip[]>([]);
-  const [preview, setPreview] = useState<PreviewState>({ status: "idle" });
   const [historyReady, setHistoryReady] = useState(false);
+
   const startingRef = useRef<Set<string>>(new Set());
   const previewTicketRef = useRef(0);
   const logBufferRef = useRef<LogBuffer | null>(null);
@@ -126,7 +133,6 @@ function App() {
       if (!loaded.outputDir) loaded.outputDir = downloadDir;
       setEngine(status);
       setSettings(loaded);
-      setPreset(loaded.preset);
       if (history && history.length > 0) setJobs(history);
       setHistoryReady(true);
     } catch (error) {
@@ -138,7 +144,6 @@ function App() {
     void loadApp();
   }, [loadApp]);
 
-  // B5: consulta la última nightly sin descargarla. Si falla, se ignora.
   useEffect(() => {
     if (!engine?.installed) return;
     let cancelled = false;
@@ -300,8 +305,6 @@ function App() {
     };
   }, []);
 
-  // El historial se guarda solo cuando cambia algo estable del trabajo: guardar
-  // en cada evento de progreso escribiría en disco varias veces por segundo.
   const historySignature = jobs
     .map(
       (job) =>
@@ -312,7 +315,7 @@ function App() {
   useEffect(() => {
     if (!historyReady) return;
     void saveHistory(jobs);
-    // `jobs` se lee de la ejecución actual; la firma evita escrituras por progreso.
+    // La firma evita escribir en cada evento de progreso.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [historySignature, historyReady]);
 
@@ -391,24 +394,28 @@ function App() {
     }
   };
 
-  const loadPreview = useCallback(async (targetUrl: string, conf: Settings) => {
-    const ticket = previewTicketRef.current + 1;
-    previewTicketRef.current = ticket;
-    setPreview({ status: "loading" });
+  const loadPreview = useCallback(
+    async (targetUrl: string, conf: Settings, kind: ToolKind) => {
+      const ticket = previewTicketRef.current + 1;
+      previewTicketRef.current = ticket;
+      setPreview({ status: "loading" });
 
-    try {
-      const stream = await invoke<PreviewStream>("preview_stream", {
-        url: targetUrl,
-        cookiesMode: conf.cookiesMode,
-        cookiesPath: conf.cookiesPath || null,
-      });
-      if (previewTicketRef.current !== ticket) return;
-      setPreview({ status: "ready", url: stream.url });
-    } catch (error) {
-      if (previewTicketRef.current !== ticket) return;
-      setPreview({ status: "error", message: safeMessage(error) });
-    }
-  }, []);
+      try {
+        const stream = await invoke<PreviewStream>("preview_stream", {
+          url: targetUrl,
+          mode: kind === "audio" ? "audio" : "video",
+          cookiesMode: conf.cookiesMode,
+          cookiesPath: conf.cookiesPath || null,
+        });
+        if (previewTicketRef.current !== ticket) return;
+        setPreview({ status: "ready", url: stream.url });
+      } catch (error) {
+        if (previewTicketRef.current !== ticket) return;
+        setPreview({ status: "error", message: safeMessage(error) });
+      }
+    },
+    [],
+  );
 
   const analyze = async () => {
     if (!settings || !url.trim()) return;
@@ -417,7 +424,6 @@ function App() {
     setAnalysisError("");
     setInfo(null);
     setSelection(new Set());
-    setClips([]);
     setPreview({ status: "idle" });
     previewTicketRef.current += 1;
     try {
@@ -428,10 +434,12 @@ function App() {
       });
       const playlist = result._type === "playlist";
       setInfo(result);
-      setIsPlaylist(playlist);
-      setSelection(new Set(entryPositions(result.entries ?? [])));
-      if (!playlist) {
-        void loadPreview(result.webpage_url || url.trim(), settings);
+      if (playlist) {
+        setMode("simple");
+        setSelection(new Set(entryPositions(result.entries ?? [])));
+      } else {
+        setSelection(new Set());
+        void loadPreview(result.webpage_url || url.trim(), settings, tool);
       }
     } catch (error) {
       setAnalysisError(safeMessage(error));
@@ -441,7 +449,16 @@ function App() {
     }
   };
 
+  const changeTool = (next: ToolKind) => {
+    if (next === tool) return;
+    setTool(next);
+    if (info && info._type !== "playlist" && settings) {
+      void loadPreview(info.webpage_url || url.trim(), settings, next);
+    }
+  };
+
   const positions = useMemo(() => entryPositions(info?.entries ?? []), [info]);
+  const isPlaylist = info?._type === "playlist";
 
   const toggleItem = (position: number) => {
     setSelection((previous) => {
@@ -466,44 +483,29 @@ function App() {
     });
   };
 
-  const addClip = (start: number, end: number) => {
-    if (clips.some((clip) => clip.start === start && clip.end === end)) {
-      setGlobalInfo("Ese tramo ya está en la lista.");
-      return;
-    }
-    setClips((previous) =>
-      [...previous, { id: crypto.randomUUID(), start, end }].sort(
-        (first, second) => first.start - second.start,
-      ),
-    );
-    setGlobalInfo("");
+  const presets = tool === "video" ? VIDEO_PRESETS : AUDIO_PRESETS;
+  const preset = settings
+    ? tool === "video"
+      ? settings.preset
+      : settings.audioPreset
+    : tool === "video"
+      ? "best"
+      : "mp3-320";
+
+  const changePreset = (value: string) => {
+    updateSettings(tool === "video" ? { preset: value } : { audioPreset: value });
   };
 
-  const removeClip = (id: string) => {
-    setClips((previous) => previous.filter((clip) => clip.id !== id));
-  };
-
-  const retryPreview = () => {
-    if (!info || !settings) return;
-    void loadPreview(info.webpage_url || url.trim(), settings);
-  };
-
-  const queueDownload = () => {
-    if (!info || !settings) return;
-    if (!settings.outputDir.trim()) {
-      setSettingsOpen(true);
-      setGlobalError("Elige una carpeta de descarga antes de continuar.");
-      return;
-    }
-
+  const stageSimple = () => {
+    if (!info) return;
     const targetUrl = info.webpage_url || url.trim();
-    const baseTitle = info.title || info.id || "Video";
-    const clipMode = info._type !== "playlist" && clips.length > 0;
+    const baseTitle = info.title || info.id || (tool === "video" ? "Vídeo" : "Audio");
+    const playlist = info._type === "playlist";
 
     let playlistItems: string | null = null;
     let totalItems = 1;
 
-    if (isPlaylist) {
+    if (playlist) {
       const items = buildPlaylistItems(selection);
       if (!items) {
         setGlobalError("Selecciona al menos un vídeo de la lista.");
@@ -513,88 +515,192 @@ function App() {
       totalItems = Math.max(1, selection.size);
     }
 
-    const drafts = clipMode
-      ? clips.map((clip) => ({
-          start: clip.start,
-          end: clip.end,
-          title: `${baseTitle} · ${formatClock(clip.start)}–${formatClock(clip.end)}`,
-        }))
-      : [{ start: null, end: null, title: baseTitle }];
+    const duplicate = staged.some(
+      (item) =>
+        item.url === targetUrl &&
+        item.preset === preset &&
+        item.clip === null &&
+        item.isPlaylist === playlist &&
+        item.playlistItems === playlistItems,
+    );
+    if (duplicate) {
+      setGlobalInfo("Ese elemento ya está en la cola.");
+      return;
+    }
+
+    const item: StagedItem = {
+      id: crypto.randomUUID(),
+      kind: tool,
+      url: targetUrl,
+      title: baseTitle,
+      thumbnail: thumbnailOf(info),
+      uploader: info.uploader || info.channel,
+      duration: info.duration,
+      preset,
+      clip: null,
+      isPlaylist: playlist,
+      playlistItems,
+      totalItems,
+    };
+
+    setStaged((previous) => [...previous, item]);
+    setGlobalError("");
+    setGlobalInfo(playlist ? "Playlist añadida a la cola." : "Añadido a la cola.");
+  };
+
+  const stageClips = (ranges: Array<{ start: number; end: number }>) => {
+    if (!info) return;
+    const targetUrl = info.webpage_url || url.trim();
+    const baseTitle = info.title || info.id || "Vídeo";
+
+    const created = ranges
+      .filter(
+        (range) =>
+          !staged.some(
+            (item) =>
+              item.url === targetUrl &&
+              item.preset === preset &&
+              item.clip?.start === range.start &&
+              item.clip?.end === range.end,
+          ),
+      )
+      .map((range) => ({
+        id: crypto.randomUUID(),
+        kind: tool,
+        url: targetUrl,
+        title: baseTitle,
+        thumbnail: thumbnailOf(info),
+        uploader: info.uploader || info.channel,
+        duration: info.duration,
+        preset,
+        clip: range,
+        isPlaylist: false,
+        playlistItems: null,
+        totalItems: 1,
+      }));
+
+    if (created.length === 0) {
+      setGlobalInfo("Esos tramos ya están en la cola.");
+      return;
+    }
+
+    setStaged((previous) => [...previous, ...created]);
+    setGlobalError("");
+    setGlobalInfo(
+      `${created.length} ${created.length === 1 ? "tramo añadido" : "tramos añadidos"} a la cola.`,
+    );
+  };
+
+  const removeStaged = (id: string) => {
+    setStaged((previous) => previous.filter((item) => item.id !== id));
+  };
+
+  const moveStaged = (id: string, direction: -1 | 1) => {
+    setStaged((previous) => {
+      const index = previous.findIndex((item) => item.id === id);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= previous.length) return previous;
+      const next = [...previous];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  };
+
+  const reorderStaged = (fromId: string, toId: string) => {
+    setStaged((previous) => {
+      const from = previous.findIndex((item) => item.id === fromId);
+      const to = previous.findIndex((item) => item.id === toId);
+      if (from < 0 || to < 0 || from === to) return previous;
+      const next = [...previous];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  };
+
+  const buildJob = (item: StagedItem, conf: Settings): Job => {
+    const jobId = crypto.randomUUID();
+    const title = item.clip
+      ? `${item.title} · ${formatClock(item.clip.start)}–${formatClock(item.clip.end)}`
+      : item.title;
+
+    const request: DownloadRequest = {
+      jobId,
+      url: item.url,
+      title: item.title,
+      preset: item.preset,
+      outputDir: conf.outputDir,
+      isPlaylist: item.isPlaylist,
+      cookiesMode: conf.cookiesMode,
+      cookiesPath: conf.cookiesPath || null,
+      rateLimit: conf.rateLimit || null,
+      playlistItems: item.playlistItems,
+      extraArgs: conf.extraArgs || null,
+      totalItems: item.totalItems,
+      clipStart: item.clip?.start ?? null,
+      clipEnd: item.clip?.end ?? null,
+    };
+
+    return {
+      id: jobId,
+      title,
+      url: item.url,
+      status: "queued",
+      percent: 0,
+      downloaded: null,
+      total: null,
+      speed: null,
+      eta: null,
+      filepath: null,
+      outputDir: conf.outputDir,
+      error: "",
+      log: [],
+      thumbnail: item.thumbnail,
+      uploader: item.uploader,
+      duration: item.duration,
+      request,
+      filesDone: 0,
+      filesTotal: undefined,
+      filePercent: 0,
+      entryIndex: 1,
+    };
+  };
+
+  const exportQueue = () => {
+    if (!settings || staged.length === 0) return;
+    if (!settings.outputDir.trim()) {
+      setSettingsOpen(true);
+      setGlobalError("Elige una carpeta de descarga antes de exportar.");
+      return;
+    }
 
     const isActive = (job: Job) =>
       job.status === "queued" ||
       job.status === "starting" ||
       job.status === "downloading";
 
-    // A4: un duplicado es mismo enlace y mismo tramo.
-    const pending = drafts.filter(
-      (draft) =>
+    const pending = staged.filter(
+      (item) =>
         !jobs.some(
           (job) =>
             isActive(job) &&
-            job.request.url === targetUrl &&
-            (job.request.clipStart ?? null) === draft.start &&
-            (job.request.clipEnd ?? null) === draft.end,
+            job.request.url === item.url &&
+            (job.request.clipStart ?? null) === (item.clip?.start ?? null) &&
+            (job.request.clipEnd ?? null) === (item.clip?.end ?? null),
         ),
     );
 
     if (pending.length === 0) {
-      setGlobalInfo(
-        clipMode
-          ? "Esos tramos ya están en la cola."
-          : `«${baseTitle}» ya está en la cola.`,
-      );
+      setGlobalInfo("Esos elementos ya están en marcha.");
       return;
     }
 
-    const created: Job[] = pending.map((draft) => {
-      const jobId = crypto.randomUUID();
-      const request: DownloadRequest = {
-        jobId,
-        url: targetUrl,
-        title: baseTitle,
-        preset,
-        outputDir: settings.outputDir,
-        isPlaylist: clipMode ? false : isPlaylist,
-        cookiesMode: settings.cookiesMode,
-        cookiesPath: settings.cookiesPath || null,
-        rateLimit: settings.rateLimit || null,
-        playlistItems: clipMode ? null : playlistItems,
-        extraArgs: settings.extraArgs || null,
-        totalItems: clipMode ? 1 : totalItems,
-        clipStart: draft.start,
-        clipEnd: draft.end,
-      };
-
-      return {
-        id: jobId,
-        title: draft.title,
-        url: targetUrl,
-        status: "queued",
-        percent: 0,
-        downloaded: null,
-        total: null,
-        speed: null,
-        eta: null,
-        filepath: null,
-        outputDir: settings.outputDir,
-        error: "",
-        log: [],
-        thumbnail: thumbnailOf(info),
-        uploader: info.uploader || info.channel,
-        duration: info.duration,
-        request,
-        filesDone: 0,
-        filesTotal: undefined,
-        filePercent: 0,
-        entryIndex: 1,
-      };
-    });
-
+    const created = pending.map((item) => buildJob(item, settings));
     setJobs((previous) => [...created, ...previous]);
+    setStaged((previous) => previous.filter((item) => !pending.includes(item)));
     setGlobalError("");
     setGlobalInfo(
-      pending.length < drafts.length ? "Algunos tramos ya estaban en la cola." : "",
+      `${created.length} ${created.length === 1 ? "elemento en marcha" : "elementos en marcha"}.`,
     );
   };
 
@@ -643,6 +749,10 @@ function App() {
     );
   };
 
+  const clearCompleted = () => {
+    setJobs((previous) => previous.filter((job) => job.status !== "completed"));
+  };
+
   const openFolder = async (path: string) => {
     try {
       await invoke("open_folder", { path });
@@ -683,44 +793,50 @@ function App() {
     (job) => job.status === "starting" || job.status === "downloading",
   ).length;
 
+  const canAdvanced = Boolean(
+    info && info._type !== "playlist" && (info.duration ?? 0) > 1,
+  );
+
+  const previewRetry = () => {
+    if (!info || !settings) return;
+    void loadPreview(info.webpage_url || url.trim(), settings, tool);
+  };
+
   if (!settings || !engine) {
     return <BootScreen error={bootError} onRetry={loadApp} />;
   }
 
   return (
     <div className="app-shell">
-      <header className="deck-head">
-        <div className="brand">
-          <span className="brand-mark">
-            <Icon name="reel" size={26} />
-          </span>
-          <span className="brand-name">ClipFetch</span>
-        </div>
-        <div className="head-tools">
-          <EngineStatusView
-            engine={engine}
-            busy={engineBusy}
-            percent={enginePercent}
-            stage={engineStage}
-            update={engineUpdate}
-            onUpdate={() => void runEngineTask("update_ytdlp")}
-          />
-          {engine.installed && (
-            <button
-              type="button"
-              className="button ghost"
-              onClick={() => setSettingsOpen(true)}
-              aria-label="Ajustes"
-            >
-              <Icon name="settings" size={16} />
-              <span className="button-label">Ajustes</span>
-            </button>
-          )}
-        </div>
-      </header>
+      <TopBar
+        tool={tool}
+        onToolChange={changeTool}
+        engine={engine}
+        engineBusy={engineBusy}
+        enginePercent={enginePercent}
+        engineStage={engineStage}
+        engineUpdate={engineUpdate}
+        onUpdateEngine={() => void runEngineTask("update_ytdlp")}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
 
-      {engine.installed ? (
-        <main className="deck-main">
+      <div className="app-body">
+        <QueueRail
+          staged={staged}
+          jobs={jobs}
+          activeCount={activeCount}
+          onRemoveStaged={removeStaged}
+          onMoveStaged={moveStaged}
+          onReorderStaged={reorderStaged}
+          onExport={exportQueue}
+          onCancel={cancelJob}
+          onRetry={retryJob}
+          onOpenFolder={openFolder}
+          onRevealFile={revealFile}
+          onClearCompleted={clearCompleted}
+        />
+
+        <main className="canvas">
           {globalError && (
             <Notice onClose={() => setGlobalError("")}>{globalError}</Notice>
           )}
@@ -739,137 +855,50 @@ function App() {
             </Notice>
           )}
 
-          <section className="intake">
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                void analyze();
-              }}
-            >
-              <label htmlFor="source-url">Fuente</label>
-              <div className="intake-row">
-                <div className="intake-field">
-                  <Icon name="film" size={18} />
-                  <input
-                    id="source-url"
-                    value={url}
-                    onChange={(event) => setUrl(event.target.value)}
-                    placeholder="https://www.youtube.com/watch?v=…"
-                    spellCheck={false}
-                    autoFocus
-                  />
-                </div>
-                <button
-                  type="submit"
-                  className="button solid"
-                  disabled={analyzing || !url.trim()}
-                >
-                  {analyzing
-                    ? elapsed > 0
-                      ? `Leyendo… ${elapsed} s`
-                      : "Leyendo…"
-                    : "Cargar"}
-                </button>
-              </div>
-            </form>
-            <p className="hint">
-              {analyzing && elapsed >= 12
-                ? "Las playlists y canales grandes tardan más en analizarse. Seguimos esperando."
-                : "YouTube, playlists, canales y otros sitios compatibles con yt-dlp."}
-            </p>
-          </section>
-
-          {analysisError && (
-            <Notice
-              title="No se pudo leer la URL"
-              onClose={() => setAnalysisError("")}
-            >
-              {analysisError}
-            </Notice>
-          )}
-
-          {info ? (
-            <div className="source-grid">
-              <SourcePanel
-                info={info}
-                thumbnail={thumbnailOf(info)}
-                isPlaylist={isPlaylist}
-                onPlaylistChange={setIsPlaylist}
-                selectedItems={selection}
-                onToggleItem={toggleItem}
-                onSelectAll={selectAll}
-                onSelectNone={selectNone}
-                onSelectRange={selectRange}
-              />
-              <TransferPanel
-                preset={preset}
-                onPresetChange={(value) => {
-                  setPreset(value);
-                  updateSettings({ preset: value });
-                }}
-                outputDir={settings.outputDir}
-                onOutputDirChange={(value) => updateSettings({ outputDir: value })}
-                onPickFolder={pickFolder}
-                onDownload={queueDownload}
-                isPlaylist={isPlaylist}
-                selectedCount={selection.size}
-                playlistTotal={positions.length}
-                clipCount={info._type !== "playlist" ? clips.length : 0}
-              />
-            </div>
-          ) : (
-            <section className="empty-deck">
-              <div className="empty-reel" aria-hidden="true">
-                <Icon name="reel" size={30} />
-              </div>
-              <div>
-                <h2>Carga una fuente</h2>
-                <p>
-                  Pega una URL para ver el formato, la calidad y la carpeta antes de
-                  descargar.
-                </p>
-              </div>
-            </section>
-          )}
-
-          {info && info._type !== "playlist" && (info.duration ?? 0) > 1 && (
-            <TimelineEditor
-              title={info.title || info.id || "Video"}
-              thumbnail={thumbnailOf(info)}
-              duration={info.duration ?? 0}
+          {engine.installed ? (
+            <ToolWorkspace
+              tool={tool}
+              mode={mode}
+              onModeChange={setMode}
+              canAdvanced={canAdvanced}
+              url={url}
+              onUrlChange={setUrl}
+              analyzing={analyzing}
+              elapsed={elapsed}
+              onAnalyze={() => void analyze()}
+              info={info}
+              analysisError={analysisError}
+              onClearAnalysisError={() => setAnalysisError("")}
               preview={preview}
-              clips={clips}
-              onRetryPreview={retryPreview}
-              onAddClip={addClip}
-              onRemoveClip={removeClip}
+              onRetryPreview={previewRetry}
+              preset={preset}
+              presetOptions={presets}
+              onPresetChange={changePreset}
+              outputDir={settings.outputDir}
+              onOutputDirChange={(value) => updateSettings({ outputDir: value })}
+              onPickFolder={pickFolder}
+              onStage={stageSimple}
+              isPlaylist={Boolean(isPlaylist)}
+              selection={selection}
+              positions={positions}
+              onToggleItem={toggleItem}
+              onSelectAll={selectAll}
+              onSelectNone={selectNone}
+              onSelectRange={selectRange}
+              onAddClips={stageClips}
+            />
+          ) : (
+            <SetupScreen
+              engine={engine}
+              busy={engineBusy}
+              percent={enginePercent}
+              stage={engineStage}
+              error={engineError}
+              onInstall={() => void runEngineTask("install_engine")}
             />
           )}
-
-          <QueuePanel
-            jobs={jobs}
-            activeCount={activeCount}
-            onCancel={cancelJob}
-            onRetry={retryJob}
-            onOpenFolder={openFolder}
-            onRevealFile={revealFile}
-          />
         </main>
-      ) : (
-        <SetupScreen
-          engine={engine}
-          busy={engineBusy}
-          percent={enginePercent}
-          stage={engineStage}
-          error={engineError}
-          onInstall={() => void runEngineTask("install_engine")}
-        />
-      )}
-
-      <footer className="deck-foot">
-        <span>ClipFetch {__APP_VERSION__}</span>
-        <span>Código abierto / MIT</span>
-        <span>Descarga solo contenido propio o con permiso.</span>
-      </footer>
+      </div>
 
       {settingsOpen && engine.installed && (
         <SettingsDrawer

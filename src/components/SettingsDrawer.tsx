@@ -214,7 +214,7 @@ export function SettingsDrawer({
         </div>
 
         <footer className="drawer-foot">
-          <span>Los cambios se guardan automáticamente.</span>
+          <span>ClipFetch {__APP_VERSION__} · Los cambios se guardan automáticamente.</span>
           <button type="button" className="button" onClick={onClose}>
             Cerrar
           </button>

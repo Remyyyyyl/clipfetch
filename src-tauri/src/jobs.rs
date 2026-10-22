@@ -86,45 +86,62 @@ fn cookie_args(mode: &str, path: Option<&str>) -> Result<Vec<String>, String> {
     }
 }
 
+fn video_args(height: Option<u32>) -> Vec<String> {
+    let filter = match height {
+        Some(height) => format!("bv*[height<={height}]+ba/b[height<={height}]/b"),
+        None => "bv*+ba/b".to_string(),
+    };
+    let mut args = vec![
+        "-f".to_string(),
+        filter,
+        "--merge-output-format".to_string(),
+        "mp4".to_string(),
+    ];
+    // Hasta 1080p se prefiere H.264/AAC para que el MP4 se abra en cualquier sitio.
+    if height.map(|value| value <= 1080).unwrap_or(true) {
+        args.push("-S".to_string());
+        args.push("vcodec:h264,acodec:aac".to_string());
+    }
+    args
+}
+
+fn audio_args(format: &str, quality: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "-f".to_string(),
+        "ba/b".to_string(),
+        "-x".to_string(),
+        "--audio-format".to_string(),
+        format.to_string(),
+    ];
+    if let Some(quality) = quality {
+        args.push("--audio-quality".to_string());
+        args.push(quality.to_string());
+    }
+    args
+}
+
 fn preset_args(preset: &str) -> Result<Vec<String>, String> {
     let args = match preset {
-        "best" => vec![
-            "-f",
-            "bv*+ba/b",
-            "--merge-output-format",
-            "mp4/mkv",
-        ],
-        "1080" => vec![
-            "-f",
-            "bv*[height<=1080]+ba/b[height<=1080]/b",
-            "--merge-output-format",
-            "mp4/mkv",
-        ],
-        "720" => vec![
-            "-f",
-            "bv*[height<=720]+ba/b[height<=720]/b",
-            "--merge-output-format",
-            "mp4/mkv",
-        ],
-        "480" => vec![
-            "-f",
-            "bv*[height<=480]+ba/b[height<=480]/b",
-            "--merge-output-format",
-            "mp4/mkv",
-        ],
-        "mp3" => vec![
-            "-f",
-            "ba/b",
-            "-x",
-            "--audio-format",
-            "mp3",
-            "--audio-quality",
-            "0",
-        ],
-        "audio" => vec!["-f", "ba/b"],
+        "best" => video_args(None),
+        "2160" => video_args(Some(2160)),
+        "1440" => video_args(Some(1440)),
+        "1080" => video_args(Some(1080)),
+        "720" => video_args(Some(720)),
+        "480" => video_args(Some(480)),
+        "360" => video_args(Some(360)),
+        "mp3" | "mp3-320" => audio_args("mp3", Some("320K")),
+        "mp3-256" => audio_args("mp3", Some("256K")),
+        "mp3-192" => audio_args("mp3", Some("192K")),
+        "mp3-128" => audio_args("mp3", Some("128K")),
+        "m4a-256" => audio_args("m4a", Some("256K")),
+        "m4a-128" => audio_args("m4a", Some("128K")),
+        "opus-160" => audio_args("opus", Some("160K")),
+        "flac" => audio_args("flac", None),
+        "wav" => audio_args("wav", None),
+        "audio" => vec!["-f".to_string(), "ba/b".to_string()],
         other => return Err(format!("Preset no válido: {other}")),
     };
-    Ok(args.into_iter().map(str::to_string).collect())
+    Ok(args)
 }
 
 fn format_clock(seconds: u32) -> String {
@@ -672,12 +689,20 @@ pub struct PreviewStream {
 pub async fn preview_stream(
     app: AppHandle,
     url: String,
+    mode: Option<String>,
     cookies_mode: String,
     cookies_path: Option<String>,
 ) -> Result<PreviewStream, String> {
     if url.trim().is_empty() {
         return Err("Falta la URL del vídeo.".to_string());
     }
+
+    let is_audio = mode.as_deref() == Some("audio");
+    let format = if is_audio {
+        "ba[ext=m4a]/ba"
+    } else {
+        PREVIEW_FORMAT
+    };
 
     let dir = engine::engine_dir(&app)?;
     let ytdlp = dir.join("yt-dlp.exe");
@@ -695,7 +720,7 @@ pub async fn preview_stream(
         .arg("--no-playlist")
         .arg("-g")
         .arg("-f")
-        .arg(PREVIEW_FORMAT)
+        .arg(format)
         .arg("--ffmpeg-location")
         .arg(&dir)
         .arg("--js-runtimes")

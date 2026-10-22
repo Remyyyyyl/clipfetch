@@ -69,9 +69,28 @@ export interface CookiesSettings {
 export interface Settings extends CookiesSettings {
   outputDir: string;
   preset: string;
+  audioPreset: string;
   concurrency: number;
   rateLimit: string;
   extraArgs: string;
+}
+
+export type ToolKind = "video" | "audio";
+
+/** Elemento preparado en la cola, todavía sin descargar. */
+export interface StagedItem {
+  id: string;
+  kind: ToolKind;
+  url: string;
+  title: string;
+  thumbnail?: string;
+  uploader?: string;
+  duration?: number | null;
+  preset: string;
+  clip: { start: number; end: number } | null;
+  isPlaylist: boolean;
+  playlistItems: string | null;
+  totalItems: number;
 }
 
 export interface DownloadRequest {

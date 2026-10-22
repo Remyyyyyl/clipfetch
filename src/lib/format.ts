@@ -1,16 +1,41 @@
 import type { YtDlpInfo } from "../types";
 
-export const PRESETS = [
+export const VIDEO_PRESETS = [
   { value: "best", label: "Mejor calidad" },
+  { value: "2160", label: "MP4 2160p" },
+  { value: "1440", label: "MP4 1440p" },
   { value: "1080", label: "MP4 1080p" },
   { value: "720", label: "MP4 720p" },
   { value: "480", label: "MP4 480p" },
-  { value: "mp3", label: "MP3 320 kbps" },
-  { value: "audio", label: "Solo audio original" },
+  { value: "360", label: "MP4 360p" },
 ];
 
+export const AUDIO_PRESETS = [
+  { value: "mp3-320", label: "MP3 320 kbps" },
+  { value: "mp3-256", label: "MP3 256 kbps" },
+  { value: "mp3-192", label: "MP3 192 kbps" },
+  { value: "mp3-128", label: "MP3 128 kbps" },
+  { value: "m4a-256", label: "M4A 256 kbps" },
+  { value: "m4a-128", label: "M4A 128 kbps" },
+  { value: "opus-160", label: "Opus 160 kbps" },
+  { value: "flac", label: "FLAC (sin pérdida)" },
+  { value: "wav", label: "WAV (sin comprimir)" },
+  { value: "audio", label: "Audio original" },
+];
+
+const LEGACY_PRESET_LABELS: Record<string, string> = {
+  mp3: "MP3 320 kbps",
+};
+
 export function presetLabel(value: string): string {
-  return PRESETS.find((preset) => preset.value === value)?.label ?? "Personalizado";
+  const found = [...VIDEO_PRESETS, ...AUDIO_PRESETS].find(
+    (preset) => preset.value === value,
+  );
+  return found?.label ?? LEGACY_PRESET_LABELS[value] ?? "Personalizado";
+}
+
+export function isAudioPreset(value: string): boolean {
+  return value === "mp3" || AUDIO_PRESETS.some((preset) => preset.value === value);
 }
 
 export function formatBytes(value: number | null | undefined): string {

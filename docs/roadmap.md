@@ -2,7 +2,7 @@
 
 Notas de diseño de lo ya hecho y de lo que viene. Sirve para no rehacer trabajo.
 
-## 0.3 · Nueva interfaz (hecho, sin publicar)
+## 0.3 · Nueva interfaz (publicada el 22/10/2026)
 
 La app pasa de una pantalla única a una mesa de corte:
 
@@ -22,13 +22,15 @@ La app pasa de una pantalla única a una mesa de corte:
 - **Audio**: MP3 320/256/192/128, M4A 256/128, Opus 160, FLAC, WAV y original.
 - **Vista previa** con `mode: "video" | "audio"` en `preview_stream`.
 
-Pendiente antes de publicar:
+Pendiente tras la publicación:
 
 - Probar una descarga real en la app instalada (motor + YouTube) y un tramo.
 - Limpiar en `App.css` los bloques de la interfaz anterior que ya no se usan
   (`.deck-head`, `.intake`, `.source-grid`, `.queue-*`, `.reel-*`…).
-- Actualizar README y versión para la próxima release.
 - Valorar persistir la bandeja si se pierde trabajo al cerrar (ahora no se guarda).
+
+Hecho para la 0.3.0: README, hoja de ruta y versión actualizados; instalador
+publicado en la release `v0.3.0`.
 
 ## Sprint 1 (hecho)
 

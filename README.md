@@ -4,7 +4,7 @@ Interfaz de escritorio sencilla para [yt-dlp](https://github.com/yt-dlp/yt-dlp) 
 
 ## Descargar e instalar
 
-1. Entra en [Releases](https://github.com/Remyyyyyl/clipfetch/releases/latest) y descarga `ClipFetch_0.2.0_x64-setup.exe`.
+1. Entra en [Releases](https://github.com/Remyyyyyl/clipfetch/releases/latest) y descarga `ClipFetch_0.3.0_x64-setup.exe`.
 2. Ejecuta el instalador. Se instala por usuario y no pide permisos de administrador.
 3. Abre ClipFetch y pulsa **Instalar motor**. La app descarga yt-dlp, FFmpeg y Deno (~250 MB de descarga; ~450 MB en disco).
 4. Pega una URL, elige la calidad y la carpeta, y pulsa **Descargar**.
@@ -15,26 +15,26 @@ Interfaz de escritorio sencilla para [yt-dlp](https://github.com/yt-dlp/yt-dlp) 
 
 **Desinstalar:** Configuración → Aplicaciones → ClipFetch. Los archivos descargados se conservan.
 
-SHA-256 del instalador 0.2.0:
+SHA-256 del instalador 0.3.0:
 
 ```text
-2fd1a9eaa52e5bf9e69f0ffc23a2729ea575c3b180c1389f3980536e61a0fa31
+32194f8b2641fe3ee08790820d0c4775bf47f7fa78016b521c01da4946040c54
 ```
 
-> Estado: MVP con editor de tramos, cola persistente y motor actualizable. Siguiente fase: firma de código, verificación de checksums y más opciones de descarga.
+> Estado: interfaz de mesa de corte con herramientas de vídeo y audio, bandeja de preparación y editor de tramos. Siguiente fase: firma de código, verificación de checksums y actualizador.
 
 ## Funciones
 
-- Análisis de videos, playlists y canales con metadatos y miniatura.
-- Presets de calidad: mejor calidad, MP4 1080p/720p/480p, MP3 y audio original.
-- **Editor de tramos**: vista previa del vídeo, línea de tiempo con dos tiradores y varios recortes por vídeo, cada uno como trabajo independiente.
-- Cola de descargas con progreso, velocidad, ETA, cancelación, reintento y logs.
-- Historial persistente de la cola y los ajustes.
-- Aviso cuando hay una nightly nueva de yt-dlp.
-- Carpeta de destino configurable y descargas simultáneas.
-- Selector de vídeos en playlists y canales.
-- Cookies desde Firefox o un archivo `cookies.txt`.
-- Argumentos extra de yt-dlp para usuarios avanzados.
+- **Barra de herramientas**: modo Vídeo y modo Audio, cada uno con su propio flujo.
+- **Bandeja de preparación**: todo lo que añades se acumula en la barra izquierda; se puede reordenar, quitar y **exportar de una vez**.
+- **Modo avanzado**: vista previa del vídeo con la línea de tiempo pegada debajo, loop, varios tramos y salida a la cola.
+- **Vídeo**: MP4 de 360p a 2160p, con H.264/AAC preferente hasta 1080p.
+- **Audio**: MP3 320/256/192/128, M4A 256/128, Opus 160, FLAC, WAV y audio original.
+- **Playlists y canales**: selector de vídeos con casillas y rangos.
+- **Cola con progreso**, cancelación, reintento, logs y «Limpiar completados».
+- **Historial persistente** de los trabajos exportados y ajustes en `state.json`.
+- **Aviso de actualización** cuando hay una nightly nueva de yt-dlp.
+- Cookies desde Firefox o `cookies.txt` y argumentos extra de yt-dlp.
 - Motor descargado y actualizado por la app: yt-dlp nightly, FFmpeg y Deno.
 
 ## Requisitos de desarrollo
@@ -84,8 +84,10 @@ Los tramos se descargan con `--download-sections "*HH:MM:SS-HH:MM:SS"` (corte en
 
 ## Limitaciones conocidas
 
-- **Vista previa de tramos:** usa el stream directo de yt-dlp (normalmente 360p, caduca en unas horas). En sitios que solo ofrecen HLS puede no reproducirse; la línea de tiempo sigue funcionando con la duración conocida.
+- **Vista previa:** usa el stream directo de yt-dlp (normalmente 360p, caduca en unas horas). En audio se pide un stream de solo audio. En sitios que solo ofrecen HLS puede no reproducirse; la línea de tiempo sigue funcionando con la duración conocida.
 - **Corte en keyframe:** al no recodificar, el clip puede incluir uno o dos segundos de más al principio.
+- **Más de 1080p:** el sitio suele servir VP9/AV1 dentro del MP4; reproductores antiguos pueden no abrirlo.
+- **Bandeja de preparación:** no se guarda al cerrar la app. Los trabajos ya exportados sí quedan en el historial.
 - **Chrome/Edge en Windows:** yt-dlp no puede descifrar las cookies v20 (App-Bound Encryption) y el archivo está bloqueado con el navegador abierto. Usa Firefox o exporta `cookies.txt` con una extensión.
 - **Sin firma de código:** el instalador y los binarios no están firmados. Windows SmartScreen puede mostrar advertencias.
 - **Sin actualizador de la app:** por ahora hay que descargar una versión nueva del instalador. El motor de yt-dlp sí se puede actualizar desde la app.

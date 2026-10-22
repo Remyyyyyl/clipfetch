@@ -2,6 +2,34 @@
 
 Notas de diseño de lo ya hecho y de lo que viene. Sirve para no rehacer trabajo.
 
+## 0.3 · Nueva interfaz (hecho, sin publicar)
+
+La app pasa de una pantalla única a una mesa de corte:
+
+- **Barra superior** con dos herramientas (Vídeo y Audio). La herramienta activa se
+  comporta como una tecla de deck: LED ámbar y borde inferior encendido.
+- **Raíl izquierdo** como bandeja: lo añadido se apila en «Preparado» (se puede
+  arrastrar para reordenar, Alt+↑/↓ con el teclado, o quitar) y lo exportado pasa a
+  «Descargas» con progreso, cancelación, reintento y «Limpiar completados».
+- **Exportar** al pie del raíl: crea todos los trabajos y arranca la cola con la
+  concurrencia configurada. Los borradores no se guardan al cerrar; los trabajos sí.
+- **Modo simple**: calidad/formato + carpeta → «Añadir a la cola».
+- **Modo avanzado** (solo vídeo suelto): monitor 16:9 con la pista pegada debajo,
+  transporte con tiempo, marcar inicio/fin, loop del tramo y varios cortes antes de
+  pasarlos a la cola. En audio se usa un `<audio>` con tarjeta propia y la misma pista.
+- **Vídeo**: resoluciones 360p a 2160p, contenedor MP4; hasta 1080p se prefiere
+  H.264/AAC. Por encima, el sitio suele servir VP9/AV1 dentro de MP4.
+- **Audio**: MP3 320/256/192/128, M4A 256/128, Opus 160, FLAC, WAV y original.
+- **Vista previa** con `mode: "video" | "audio"` en `preview_stream`.
+
+Pendiente antes de publicar:
+
+- Probar una descarga real en la app instalada (motor + YouTube) y un tramo.
+- Limpiar en `App.css` los bloques de la interfaz anterior que ya no se usan
+  (`.deck-head`, `.intake`, `.source-grid`, `.queue-*`, `.reel-*`…).
+- Actualizar README y versión para la próxima release.
+- Valorar persistir la bandeja si se pierde trabajo al cerrar (ahora no se guarda).
+
 ## Sprint 1 (hecho)
 
 | Punto | Qué se hizo |

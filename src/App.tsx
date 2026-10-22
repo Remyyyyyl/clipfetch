@@ -297,7 +297,19 @@ function App() {
       );
     };
 
-    void attach();
+    void (async () => {
+      // En dev, el primer listen puede llegar antes de que Tauri inyecte el IPC.
+      // Se reintenta sin dejar promesas rechazadas sin manejar.
+      for (let attempt = 0; attempt < 3 && !disposed; attempt += 1) {
+        try {
+          await attach();
+          return;
+        } catch {
+          if (disposed || unlisteners.length > 0) return;
+          await new Promise<void>((resolve) => setTimeout(resolve, 400));
+        }
+      }
+    })();
     return () => {
       disposed = true;
       buffer?.dispose();

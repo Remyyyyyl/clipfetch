@@ -14,6 +14,12 @@ export interface EngineProgress {
   percent: number | null;
 }
 
+export interface EngineUpdate {
+  current: string;
+  latest: string;
+  updateAvailable: boolean;
+}
+
 export interface YtDlpFormat {
   format_id?: string;
   ext?: string;
@@ -35,6 +41,7 @@ export interface YtDlpEntry {
   webpage_url?: string;
   duration?: number | null;
   thumbnail?: string;
+  playlist_index?: number | null;
 }
 
 export interface YtDlpInfo {
@@ -62,9 +69,28 @@ export interface CookiesSettings {
 export interface Settings extends CookiesSettings {
   outputDir: string;
   preset: string;
+  audioPreset: string;
   concurrency: number;
   rateLimit: string;
   extraArgs: string;
+}
+
+export type ToolKind = "video" | "audio";
+
+/** Elemento preparado en la cola, todavía sin descargar. */
+export interface StagedItem {
+  id: string;
+  kind: ToolKind;
+  url: string;
+  title: string;
+  thumbnail?: string;
+  uploader?: string;
+  duration?: number | null;
+  preset: string;
+  clip: { start: number; end: number } | null;
+  isPlaylist: boolean;
+  playlistItems: string | null;
+  totalItems: number;
 }
 
 export interface DownloadRequest {
@@ -79,6 +105,27 @@ export interface DownloadRequest {
   rateLimit: string | null;
   playlistItems: string | null;
   extraArgs: string | null;
+  /** Número de vídeos que abarca el trabajo (1 en un vídeo suelto, N en una playlist). */
+  totalItems: number;
+  /** Recorte: segundos enteros desde el inicio. `null` = vídeo completo. */
+  clipStart: number | null;
+  clipEnd: number | null;
+}
+
+export interface Clip {
+  id: string;
+  start: number;
+  end: number;
+}
+
+export interface PreviewStream {
+  url: string;
+}
+
+export interface PreviewState {
+  status: "idle" | "loading" | "ready" | "error";
+  url?: string;
+  message?: string;
 }
 
 export type JobStatus =
@@ -107,4 +154,22 @@ export interface Job {
   uploader?: string;
   duration?: number | null;
   request: DownloadRequest;
+  /** Fase del progreso: "unknown", "preparing", "downloading" o "processing". */
+  stage?: string;
+  /** Archivo actual dentro del vídeo (0-based) y total de archivos que lo componen. */
+  filesDone?: number;
+  filesTotal?: number;
+  /** Posición del vídeo dentro de la playlist (1-based) y total de vídeos. */
+  entryIndex?: number;
+  /** Porcentaje del archivo en curso, sin agregar. */
+  filePercent?: number;
+  /** El archivo ya existía en la carpeta y yt-dlp no lo volvió a descargar. */
+  skipped?: boolean;
+}
+
+/** Payload del evento `job://plan`: cuántos archivos forman el vídeo actual. */
+export interface JobPlanPayload {
+  jobId: string;
+  files: number;
+  formatId: string;
 }

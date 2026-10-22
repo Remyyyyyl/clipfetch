@@ -4,7 +4,7 @@ Interfaz de escritorio sencilla para [yt-dlp](https://github.com/yt-dlp/yt-dlp) 
 
 ## Descargar e instalar
 
-1. Entra en [Releases](https://github.com/Remyyyyyl/clipfetch/releases/latest) y descarga `ClipFetch_0.1.0_x64-setup.exe`.
+1. Entra en [Releases](https://github.com/Remyyyyyl/clipfetch/releases/latest) y descarga `ClipFetch_0.3.0_x64-setup.exe`.
 2. Ejecuta el instalador. Se instala por usuario y no pide permisos de administrador.
 3. Abre ClipFetch y pulsa **Instalar motor**. La app descarga yt-dlp, FFmpeg y Deno (~250 MB de descarga; ~450 MB en disco).
 4. Pega una URL, elige la calidad y la carpeta, y pulsa **Descargar**.
@@ -15,22 +15,26 @@ Interfaz de escritorio sencilla para [yt-dlp](https://github.com/yt-dlp/yt-dlp) 
 
 **Desinstalar:** Configuración → Aplicaciones → ClipFetch. Los archivos descargados se conservan.
 
-SHA-256 del instalador 0.1.0:
+SHA-256 del instalador 0.3.0:
 
 ```text
-68fb44b9c5aba547a17d35b864f96199cb1baed14bfd3006a3dde5aba087272e
+32194f8b2641fe3ee08790820d0c4775bf47f7fa78016b521c01da4946040c54
 ```
 
-> Estado: MVP funcional con una interfaz de escritorio propia. La siguiente fase es ampliar opciones y pulir detalles.
+> Estado: interfaz de mesa de corte con herramientas de vídeo y audio, bandeja de preparación y editor de tramos. Siguiente fase: firma de código, verificación de checksums y actualizador.
 
 ## Funciones
 
-- Análisis de videos, playlists y canales con metadatos y miniatura.
-- Presets de calidad: mejor calidad, MP4 1080p/720p/480p, MP3 y audio original.
-- Cola de descargas con progreso, velocidad, ETA, cancelación, reintento y logs.
-- Carpeta de destino configurable y descargas simultáneas.
-- Cookies desde Firefox o un archivo `cookies.txt`.
-- Argumentos extra de yt-dlp para usuarios avanzados.
+- **Barra de herramientas**: modo Vídeo y modo Audio, cada uno con su propio flujo.
+- **Bandeja de preparación**: todo lo que añades se acumula en la barra izquierda; se puede reordenar, quitar y **exportar de una vez**.
+- **Modo avanzado**: vista previa del vídeo con la línea de tiempo pegada debajo, loop, varios tramos y salida a la cola.
+- **Vídeo**: MP4 de 360p a 2160p, con H.264/AAC preferente hasta 1080p.
+- **Audio**: MP3 320/256/192/128, M4A 256/128, Opus 160, FLAC, WAV y audio original.
+- **Playlists y canales**: selector de vídeos con casillas y rangos.
+- **Cola con progreso**, cancelación, reintento, logs y «Limpiar completados».
+- **Historial persistente** de los trabajos exportados y ajustes en `state.json`.
+- **Aviso de actualización** cuando hay una nightly nueva de yt-dlp.
+- Cookies desde Firefox o `cookies.txt` y argumentos extra de yt-dlp.
 - Motor descargado y actualizado por la app: yt-dlp nightly, FFmpeg y Deno.
 
 ## Requisitos de desarrollo
@@ -60,8 +64,9 @@ El instalador queda en `src-tauri/target/release/bundle/nsis/`.
 ```text
 src/                  Interfaz React + TypeScript
 src-tauri/            Backend Rust y configuración de Tauri
-src-tauri/src/engine.rs   Descarga y estado de yt-dlp/FFmpeg/Deno
-src-tauri/src/jobs.rs     Análisis, cola y ejecución de yt-dlp
+src-tauri/src/engine.rs   Descarga, estado y actualización de yt-dlp/FFmpeg/Deno
+src-tauri/src/jobs.rs     Análisis, cola, recortes y ejecución de yt-dlp
+src-tauri/src/store.rs    state.json (ajustes e historial) con escritura atómica
 src-tauri/src/lib.rs      Comandos de Tauri
 ```
 
@@ -71,10 +76,18 @@ El motor se guarda en `%LOCALAPPDATA%\app.clipfetch.desktop\engine`:
 - `ffmpeg.exe` y `ffprobe.exe` desde `yt-dlp/FFmpeg-Builds`.
 - `deno.exe`, necesario para los desafíos JavaScript de YouTube.
 
-La app lanza `yt-dlp` como subproceso y lee eventos estructurados con `--progress-template` y `--print after_move:...`. No parsea la salida humana de yt-dlp.
+Los ajustes y el historial se guardan en `%LOCALAPPDATA%\app.clipfetch.desktop\state.json`.
+
+La app lanza `yt-dlp` como subproceso y lee eventos estructurados con `--progress-template` y `--print ...`. La única línea humana que interpreta es el aviso de archivo ya descargado («has already been downloaded»), para no dar por buena una descarga que no ocurrió.
+
+Los tramos se descargan con `--download-sections "*HH:MM:SS-HH:MM:SS"` (corte en keyframe, sin recodificar) y se guardan en una carpeta con el nombre del vídeo, con el rango como prefijo del archivo.
 
 ## Limitaciones conocidas
 
+- **Vista previa:** usa el stream directo de yt-dlp (normalmente 360p, caduca en unas horas). En audio se pide un stream de solo audio. En sitios que solo ofrecen HLS puede no reproducirse; la línea de tiempo sigue funcionando con la duración conocida.
+- **Corte en keyframe:** al no recodificar, el clip puede incluir uno o dos segundos de más al principio.
+- **Más de 1080p:** el sitio suele servir VP9/AV1 dentro del MP4; reproductores antiguos pueden no abrirlo.
+- **Bandeja de preparación:** no se guarda al cerrar la app. Los trabajos ya exportados sí quedan en el historial.
 - **Chrome/Edge en Windows:** yt-dlp no puede descifrar las cookies v20 (App-Bound Encryption) y el archivo está bloqueado con el navegador abierto. Usa Firefox o exporta `cookies.txt` con una extensión.
 - **Sin firma de código:** el instalador y los binarios no están firmados. Windows SmartScreen puede mostrar advertencias.
 - **Sin actualizador de la app:** por ahora hay que descargar una versión nueva del instalador. El motor de yt-dlp sí se puede actualizar desde la app.

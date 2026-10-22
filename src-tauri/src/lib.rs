@@ -1,5 +1,6 @@
 mod engine;
 mod jobs;
+mod store;
 
 use tauri::Manager;
 
@@ -16,6 +17,9 @@ fn open_folder(path: String) -> Result<(), String> {
     if path.trim().is_empty() {
         return Err("La carpeta está vacía".to_string());
     }
+    if !std::path::Path::new(&path).is_dir() {
+        return Err(format!("La carpeta no existe: {path}"));
+    }
     std::process::Command::new("explorer")
         .arg(&path)
         .spawn()
@@ -28,8 +32,14 @@ fn reveal_file(path: String) -> Result<(), String> {
     if path.trim().is_empty() {
         return Err("La ruta está vacía".to_string());
     }
+    if !std::path::Path::new(&path).exists() {
+        return Err(format!("El archivo ya no está en esa ruta: {path}"));
+    }
+    // Dos argumentos en vez de un "/select,{path}" concatenado: así las comas y
+    // los espacios del nombre no rompen el análisis que hace explorer.
     std::process::Command::new("explorer")
-        .arg(format!("/select,{path}"))
+        .arg("/select,")
+        .arg(&path)
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("No se pudo abrir la carpeta: {e}"))
@@ -44,9 +54,13 @@ pub fn run() {
             engine::engine_status,
             engine::install_engine,
             engine::update_ytdlp,
+            engine::check_engine_update,
             jobs::analyze_url,
             jobs::start_download,
             jobs::cancel_download,
+            jobs::preview_stream,
+            store::load_state,
+            store::save_state,
             default_download_dir,
             open_folder,
             reveal_file,

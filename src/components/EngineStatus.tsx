@@ -1,4 +1,4 @@
-import type { EngineStatus as EngineStatusType } from "../types";
+import type { EngineStatus as EngineStatusType, EngineUpdate } from "../types";
 import { stageLabel } from "../lib/format";
 import { Icon } from "./Icon";
 
@@ -7,6 +7,7 @@ interface EngineStatusProps {
   busy: boolean;
   percent: number | null;
   stage: string;
+  update?: EngineUpdate | null;
   onUpdate: () => void;
 }
 
@@ -15,10 +16,12 @@ export function EngineStatus({
   busy,
   percent,
   stage,
+  update,
   onUpdate,
 }: EngineStatusProps) {
   const installed = Boolean(engine?.installed);
   const state = busy ? "busy" : installed ? "ready" : engine ? "idle" : "checking";
+  const updateReady = Boolean(installed && update?.updateAvailable && !busy);
   const value = busy
     ? `${stageLabel(stage)}${percent === null ? "" : ` ${Math.round(percent)}%`}`
     : engine
@@ -34,6 +37,7 @@ export function EngineStatus({
         engine
           ? [
               `yt-dlp ${engine.ytdlpVersion}`,
+              updateReady ? `Disponible: ${update?.latest}` : "",
               engine.ffmpegVersion,
               engine.denoVersion,
             ]
@@ -47,6 +51,17 @@ export function EngineStatus({
         <span className="engine-label">Motor</span>
         <span className="engine-value">{value}</span>
       </div>
+      {updateReady && (
+        <button
+          type="button"
+          className="update-tag"
+          onClick={onUpdate}
+          disabled={busy}
+          title={`Actualizar de ${update?.current} a ${update?.latest}`}
+        >
+          Actualizar
+        </button>
+      )}
       {installed && (
         <button
           type="button"

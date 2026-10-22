@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -10,31 +10,39 @@ import type {
   DownloadRequest,
   EngineProgress,
   EngineStatus,
+  EngineUpdate,
   Job,
+  JobPlanPayload,
+  PreviewState,
+  PreviewStream,
   Settings,
+  StagedItem,
+  ToolKind,
   YtDlpInfo,
 } from "./types";
-import { safeMessage, thumbnailOf } from "./lib/format";
-import { EngineStatus as EngineStatusView } from "./components/EngineStatus";
+import {
+  AUDIO_PRESETS,
+  VIDEO_PRESETS,
+  formatClock,
+  safeMessage,
+  thumbnailOf,
+} from "./lib/format";
+import { loadSettings, saveSettings } from "./lib/settings";
+import { loadHistory, saveHistory } from "./lib/history";
+import { useFileStorage } from "./lib/persistence";
+import { buildPlaylistItems, entryPositions, isFullSelection } from "./lib/playlist";
+import { aggregateProgress, applyPlan } from "./lib/progress";
+import { LogBuffer } from "./lib/logBuffer";
 import { Icon } from "./components/Icon";
 import { Notice } from "./components/Notice";
-import { QueuePanel } from "./components/QueuePanel";
+import { QueueRail } from "./components/QueueRail";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { SetupScreen } from "./components/SetupScreen";
-import { SourcePanel } from "./components/SourcePanel";
-import { TransferPanel } from "./components/TransferPanel";
+import { ToolWorkspace } from "./components/ToolWorkspace";
+import { TopBar } from "./components/TopBar";
 
-const STORAGE_KEY = "clipfetch.settings.v1";
-
-const DEFAULT_SETTINGS: Settings = {
-  outputDir: "",
-  preset: "best",
-  concurrency: 2,
-  rateLimit: "",
-  extraArgs: "",
-  cookiesMode: "none",
-  cookiesPath: "",
-};
+const MAX_LOG_LINES = 400;
+const ALREADY_DOWNLOADED = /\[download\]\s+(.+?)\s+has already been downloaded/i;
 
 interface JobProgressPayload {
   jobId: string;
@@ -70,36 +78,63 @@ function App() {
   const [engineStage, setEngineStage] = useState("");
   const [enginePercent, setEnginePercent] = useState<number | null>(null);
   const [engineError, setEngineError] = useState("");
+  const [engineUpdate, setEngineUpdate] = useState<EngineUpdate | null>(null);
   const [bootError, setBootError] = useState("");
+
+  const [tool, setTool] = useState<ToolKind>("video");
+  const [mode, setMode] = useState<"simple" | "advanced">("simple");
   const [url, setUrl] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeSince, setAnalyzeSince] = useState<number | null>(null);
+  const [elapsed, setElapsed] = useState(0);
   const [info, setInfo] = useState<YtDlpInfo | null>(null);
   const [analysisError, setAnalysisError] = useState("");
-  const [preset, setPreset] = useState("best");
-  const [isPlaylist, setIsPlaylist] = useState(false);
+  const [selection, setSelection] = useState<Set<number>>(() => new Set());
+  const [preview, setPreview] = useState<PreviewState>({ status: "idle" });
+  const [staged, setStaged] = useState<StagedItem[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [globalError, setGlobalError] = useState("");
+  const [globalInfo, setGlobalInfo] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [historyReady, setHistoryReady] = useState(false);
+
   const startingRef = useRef<Set<string>>(new Set());
+  const previewTicketRef = useRef(0);
+  const logBufferRef = useRef<LogBuffer | null>(null);
+
+  if (logBufferRef.current === null) {
+    logBufferRef.current = new LogBuffer((batch) => {
+      setJobs((previous) => {
+        let changed = false;
+        const next = previous.map((job) => {
+          const lines = batch.get(job.id);
+          if (!lines || lines.length === 0) return job;
+          changed = true;
+          return {
+            ...job,
+            log: [...job.log.slice(-(MAX_LOG_LINES - lines.length)), ...lines],
+          };
+        });
+        return changed ? next : previous;
+      });
+    });
+  }
 
   const loadApp = useCallback(async () => {
     setBootError("");
     try {
-      const status = await invoke<EngineStatus>("engine_status");
-      const downloadDir = await invoke<string>("default_download_dir").catch(() => "");
-      let loaded: Settings = { ...DEFAULT_SETTINGS };
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        try {
-          loaded = { ...loaded, ...(JSON.parse(raw) as Partial<Settings>) };
-        } catch {
-          // Ajustes corruptos: se usan los valores por defecto.
-        }
-      }
+      await useFileStorage();
+      const [loaded, history, downloadDir, status] = await Promise.all([
+        loadSettings(),
+        loadHistory(),
+        invoke<string>("default_download_dir").catch(() => ""),
+        invoke<EngineStatus>("engine_status"),
+      ]);
       if (!loaded.outputDir) loaded.outputDir = downloadDir;
       setEngine(status);
       setSettings(loaded);
-      setPreset(loaded.preset);
+      if (history && history.length > 0) setJobs(history);
+      setHistoryReady(true);
     } catch (error) {
       setBootError(safeMessage(error));
     }
@@ -110,14 +145,40 @@ function App() {
   }, [loadApp]);
 
   useEffect(() => {
-    if (settings) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
-    }
+    if (!engine?.installed) return;
+    let cancelled = false;
+    void invoke<EngineUpdate | null>("check_engine_update")
+      .then((update) => {
+        if (!cancelled) setEngineUpdate(update ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setEngineUpdate(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [engine?.installed, engine?.ytdlpVersion]);
+
+  useEffect(() => {
+    if (settings) void saveSettings(settings);
   }, [settings]);
+
+  useEffect(() => {
+    if (analyzeSince === null) {
+      setElapsed(0);
+      return;
+    }
+    setElapsed(0);
+    const timer = window.setInterval(() => {
+      setElapsed(Math.floor((Date.now() - analyzeSince) / 1000));
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [analyzeSince]);
 
   useEffect(() => {
     let disposed = false;
     const unlisteners: UnlistenFn[] = [];
+    const buffer = logBufferRef.current;
 
     const attach = async () => {
       const progress = await listen<JobProgressPayload>("job://progress", (event) => {
@@ -125,10 +186,17 @@ function App() {
         setJobs((previous) =>
           previous.map((job) => {
             if (job.id !== payload.jobId || job.status === "cancelled") return job;
+
+            const aggregate = aggregateProgress(job, payload.percent ?? job.filePercent ?? 0);
+
             return {
               ...job,
               status: "downloading",
-              percent: payload.percent ?? job.percent,
+              percent: aggregate.percent,
+              filesDone: aggregate.filesDone,
+              filesTotal: aggregate.filesTotal,
+              filePercent: aggregate.filePercent,
+              entryIndex: aggregate.entryIndex,
               downloaded: payload.downloaded ?? job.downloaded,
               total: payload.total ?? job.total,
               speed: payload.speed ?? job.speed,
@@ -144,8 +212,20 @@ function App() {
       unlisteners.push(progress);
 
       unlisteners.push(
+        await listen<JobPlanPayload>("job://plan", (event) => {
+          const payload = event.payload;
+          setJobs((previous) =>
+            previous.map((job) =>
+              job.id === payload.jobId ? { ...job, ...applyPlan(job, payload) } : job,
+            ),
+          );
+        }),
+      );
+
+      unlisteners.push(
         await listen<JobDonePayload>("job://done", (event) => {
           const payload = event.payload;
+          buffer?.flushNow();
           startingRef.current.delete(payload.jobId);
           setJobs((previous) =>
             previous.map((job) =>
@@ -154,9 +234,11 @@ function App() {
                     ...job,
                     status: "completed",
                     percent: 100,
+                    filePercent: 100,
+                    filesDone: job.filesTotal ?? job.filesDone,
                     speed: null,
                     eta: null,
-                    filepath: payload.filepath,
+                    filepath: payload.filepath ?? job.filepath,
                     outputDir: payload.outputDir,
                   }
                 : job,
@@ -168,6 +250,7 @@ function App() {
       unlisteners.push(
         await listen<JobErrorPayload>("job://error", (event) => {
           const payload = event.payload;
+          buffer?.flushNow();
           startingRef.current.delete(payload.jobId);
           setJobs((previous) =>
             previous.map((job) =>
@@ -181,6 +264,7 @@ function App() {
 
       unlisteners.push(
         await listen<{ jobId: string }>("job://cancelled", (event) => {
+          buffer?.flushNow();
           startingRef.current.delete(event.payload.jobId);
           setJobs((previous) =>
             previous.map((job) =>
@@ -194,24 +278,58 @@ function App() {
 
       unlisteners.push(
         await listen<JobLogPayload>("job://log", (event) => {
-          const payload = event.payload;
-          setJobs((previous) =>
-            previous.map((job) =>
-              job.id === payload.jobId
-                ? { ...job, log: [...job.log.slice(-399), payload.line] }
-                : job,
-            ),
-          );
+          const { jobId, line } = event.payload;
+
+          const already = ALREADY_DOWNLOADED.exec(line);
+          if (already) {
+            const existing = already[1]?.trim();
+            setJobs((previous) =>
+              previous.map((job) =>
+                job.id === jobId
+                  ? { ...job, skipped: true, filepath: job.filepath ?? existing ?? null }
+                  : job,
+              ),
+            );
+          }
+
+          buffer?.push(jobId, line);
         }),
       );
     };
 
-    void attach();
+    void (async () => {
+      // En dev, el primer listen puede llegar antes de que Tauri inyecte el IPC.
+      // Se reintenta sin dejar promesas rechazadas sin manejar.
+      for (let attempt = 0; attempt < 3 && !disposed; attempt += 1) {
+        try {
+          await attach();
+          return;
+        } catch {
+          if (disposed || unlisteners.length > 0) return;
+          await new Promise<void>((resolve) => setTimeout(resolve, 400));
+        }
+      }
+    })();
     return () => {
       disposed = true;
+      buffer?.dispose();
       for (const unlisten of unlisteners) unlisten();
     };
   }, []);
+
+  const historySignature = jobs
+    .map(
+      (job) =>
+        `${job.id}:${job.status}:${job.filepath ?? ""}:${job.skipped ? 1 : 0}:${job.error}`,
+    )
+    .join("|");
+
+  useEffect(() => {
+    if (!historyReady) return;
+    void saveHistory(jobs);
+    // La firma evita escribir en cada evento de progreso.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historySignature, historyReady]);
 
   useEffect(() => {
     if (!settings) return;
@@ -274,6 +392,7 @@ function App() {
       setEngine(status);
       setEnginePercent(100);
       setEngineStage("");
+      if (command === "update_ytdlp") setEngineUpdate(null);
     } catch (error) {
       const message = safeMessage(error);
       if (command === "install_engine") {
@@ -287,56 +406,257 @@ function App() {
     }
   };
 
+  const loadPreview = useCallback(
+    async (targetUrl: string, conf: Settings, kind: ToolKind) => {
+      const ticket = previewTicketRef.current + 1;
+      previewTicketRef.current = ticket;
+      setPreview({ status: "loading" });
+
+      try {
+        const stream = await invoke<PreviewStream>("preview_stream", {
+          url: targetUrl,
+          mode: kind === "audio" ? "audio" : "video",
+          cookiesMode: conf.cookiesMode,
+          cookiesPath: conf.cookiesPath || null,
+        });
+        if (previewTicketRef.current !== ticket) return;
+        setPreview({ status: "ready", url: stream.url });
+      } catch (error) {
+        if (previewTicketRef.current !== ticket) return;
+        setPreview({ status: "error", message: safeMessage(error) });
+      }
+    },
+    [],
+  );
+
   const analyze = async () => {
     if (!settings || !url.trim()) return;
     setAnalyzing(true);
+    setAnalyzeSince(Date.now());
     setAnalysisError("");
     setInfo(null);
+    setSelection(new Set());
+    setPreview({ status: "idle" });
+    previewTicketRef.current += 1;
     try {
       const result = await invoke<YtDlpInfo>("analyze_url", {
         url: url.trim(),
         cookiesMode: settings.cookiesMode,
         cookiesPath: settings.cookiesPath ? settings.cookiesPath : null,
       });
+      const playlist = result._type === "playlist";
       setInfo(result);
-      setIsPlaylist(result._type === "playlist");
+      if (playlist) {
+        setMode("simple");
+        setSelection(new Set(entryPositions(result.entries ?? [])));
+      } else {
+        setSelection(new Set());
+        void loadPreview(result.webpage_url || url.trim(), settings, tool);
+      }
     } catch (error) {
       setAnalysisError(safeMessage(error));
     } finally {
       setAnalyzing(false);
+      setAnalyzeSince(null);
     }
   };
 
-  const queueDownload = () => {
-    if (!info || !settings) return;
-    if (!settings.outputDir.trim()) {
-      setSettingsOpen(true);
-      setGlobalError("Elige una carpeta de descarga antes de continuar.");
+  const changeTool = (next: ToolKind) => {
+    if (next === tool) return;
+    setTool(next);
+    if (info && info._type !== "playlist" && settings) {
+      void loadPreview(info.webpage_url || url.trim(), settings, next);
+    }
+  };
+
+  const positions = useMemo(() => entryPositions(info?.entries ?? []), [info]);
+  const isPlaylist = info?._type === "playlist";
+
+  const toggleItem = (position: number) => {
+    setSelection((previous) => {
+      const next = new Set(previous);
+      if (next.has(position)) next.delete(position);
+      else next.add(position);
+      return next;
+    });
+  };
+
+  const selectAll = () => setSelection(new Set(positions));
+  const selectNone = () => setSelection(new Set());
+  const selectRange = (from: number, to: number) => {
+    const low = Math.min(from, to);
+    const high = Math.max(from, to);
+    setSelection((previous) => {
+      const next = new Set(previous);
+      for (const position of positions) {
+        if (position >= low && position <= high) next.add(position);
+      }
+      return next;
+    });
+  };
+
+  const presets = tool === "video" ? VIDEO_PRESETS : AUDIO_PRESETS;
+  const preset = settings
+    ? tool === "video"
+      ? settings.preset
+      : settings.audioPreset
+    : tool === "video"
+      ? "best"
+      : "mp3-320";
+
+  const changePreset = (value: string) => {
+    updateSettings(tool === "video" ? { preset: value } : { audioPreset: value });
+  };
+
+  const stageSimple = () => {
+    if (!info) return;
+    const targetUrl = info.webpage_url || url.trim();
+    const baseTitle = info.title || info.id || (tool === "video" ? "Vídeo" : "Audio");
+    const playlist = info._type === "playlist";
+
+    let playlistItems: string | null = null;
+    let totalItems = 1;
+
+    if (playlist) {
+      const items = buildPlaylistItems(selection);
+      if (!items) {
+        setGlobalError("Selecciona al menos un vídeo de la lista.");
+        return;
+      }
+      playlistItems = isFullSelection(selection, positions) ? null : items;
+      totalItems = Math.max(1, selection.size);
+    }
+
+    const duplicate = staged.some(
+      (item) =>
+        item.url === targetUrl &&
+        item.preset === preset &&
+        item.clip === null &&
+        item.isPlaylist === playlist &&
+        item.playlistItems === playlistItems,
+    );
+    if (duplicate) {
+      setGlobalInfo("Ese elemento ya está en la cola.");
       return;
     }
 
-    const jobId = crypto.randomUUID();
+    const item: StagedItem = {
+      id: crypto.randomUUID(),
+      kind: tool,
+      url: targetUrl,
+      title: baseTitle,
+      thumbnail: thumbnailOf(info),
+      uploader: info.uploader || info.channel,
+      duration: info.duration,
+      preset,
+      clip: null,
+      isPlaylist: playlist,
+      playlistItems,
+      totalItems,
+    };
+
+    setStaged((previous) => [...previous, item]);
+    setGlobalError("");
+    setGlobalInfo(playlist ? "Playlist añadida a la cola." : "Añadido a la cola.");
+  };
+
+  const stageClips = (ranges: Array<{ start: number; end: number }>) => {
+    if (!info) return;
     const targetUrl = info.webpage_url || url.trim();
-    const title = info.title || info.id || "Video";
+    const baseTitle = info.title || info.id || "Vídeo";
+
+    const created = ranges
+      .filter(
+        (range) =>
+          !staged.some(
+            (item) =>
+              item.url === targetUrl &&
+              item.preset === preset &&
+              item.clip?.start === range.start &&
+              item.clip?.end === range.end,
+          ),
+      )
+      .map((range) => ({
+        id: crypto.randomUUID(),
+        kind: tool,
+        url: targetUrl,
+        title: baseTitle,
+        thumbnail: thumbnailOf(info),
+        uploader: info.uploader || info.channel,
+        duration: info.duration,
+        preset,
+        clip: range,
+        isPlaylist: false,
+        playlistItems: null,
+        totalItems: 1,
+      }));
+
+    if (created.length === 0) {
+      setGlobalInfo("Esos tramos ya están en la cola.");
+      return;
+    }
+
+    setStaged((previous) => [...previous, ...created]);
+    setGlobalError("");
+    setGlobalInfo(
+      `${created.length} ${created.length === 1 ? "tramo añadido" : "tramos añadidos"} a la cola.`,
+    );
+  };
+
+  const removeStaged = (id: string) => {
+    setStaged((previous) => previous.filter((item) => item.id !== id));
+  };
+
+  const moveStaged = (id: string, direction: -1 | 1) => {
+    setStaged((previous) => {
+      const index = previous.findIndex((item) => item.id === id);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= previous.length) return previous;
+      const next = [...previous];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  };
+
+  const reorderStaged = (fromId: string, toId: string) => {
+    setStaged((previous) => {
+      const from = previous.findIndex((item) => item.id === fromId);
+      const to = previous.findIndex((item) => item.id === toId);
+      if (from < 0 || to < 0 || from === to) return previous;
+      const next = [...previous];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  };
+
+  const buildJob = (item: StagedItem, conf: Settings): Job => {
+    const jobId = crypto.randomUUID();
+    const title = item.clip
+      ? `${item.title} · ${formatClock(item.clip.start)}–${formatClock(item.clip.end)}`
+      : item.title;
 
     const request: DownloadRequest = {
       jobId,
-      url: targetUrl,
-      title,
-      preset,
-      outputDir: settings.outputDir,
-      isPlaylist,
-      cookiesMode: settings.cookiesMode,
-      cookiesPath: settings.cookiesPath || null,
-      rateLimit: settings.rateLimit || null,
-      playlistItems: null,
-      extraArgs: settings.extraArgs || null,
+      url: item.url,
+      title: item.title,
+      preset: item.preset,
+      outputDir: conf.outputDir,
+      isPlaylist: item.isPlaylist,
+      cookiesMode: conf.cookiesMode,
+      cookiesPath: conf.cookiesPath || null,
+      rateLimit: conf.rateLimit || null,
+      playlistItems: item.playlistItems,
+      extraArgs: conf.extraArgs || null,
+      totalItems: item.totalItems,
+      clipStart: item.clip?.start ?? null,
+      clipEnd: item.clip?.end ?? null,
     };
 
-    const job: Job = {
+    return {
       id: jobId,
       title,
-      url: targetUrl,
+      url: item.url,
       status: "queued",
       percent: 0,
       downloaded: null,
@@ -344,21 +664,61 @@ function App() {
       speed: null,
       eta: null,
       filepath: null,
-      outputDir: settings.outputDir,
+      outputDir: conf.outputDir,
       error: "",
       log: [],
-      thumbnail: thumbnailOf(info),
-      uploader: info.uploader || info.channel,
-      duration: info.duration,
+      thumbnail: item.thumbnail,
+      uploader: item.uploader,
+      duration: item.duration,
       request,
+      filesDone: 0,
+      filesTotal: undefined,
+      filePercent: 0,
+      entryIndex: 1,
     };
+  };
 
-    setJobs((previous) => [job, ...previous]);
+  const exportQueue = () => {
+    if (!settings || staged.length === 0) return;
+    if (!settings.outputDir.trim()) {
+      setSettingsOpen(true);
+      setGlobalError("Elige una carpeta de descarga antes de exportar.");
+      return;
+    }
+
+    const isActive = (job: Job) =>
+      job.status === "queued" ||
+      job.status === "starting" ||
+      job.status === "downloading";
+
+    const pending = staged.filter(
+      (item) =>
+        !jobs.some(
+          (job) =>
+            isActive(job) &&
+            job.request.url === item.url &&
+            (job.request.clipStart ?? null) === (item.clip?.start ?? null) &&
+            (job.request.clipEnd ?? null) === (item.clip?.end ?? null),
+        ),
+    );
+
+    if (pending.length === 0) {
+      setGlobalInfo("Esos elementos ya están en marcha.");
+      return;
+    }
+
+    const created = pending.map((item) => buildJob(item, settings));
+    setJobs((previous) => [...created, ...previous]);
+    setStaged((previous) => previous.filter((item) => !pending.includes(item)));
     setGlobalError("");
+    setGlobalInfo(
+      `${created.length} ${created.length === 1 ? "elemento en marcha" : "elementos en marcha"}.`,
+    );
   };
 
   const cancelJob = async (job: Job) => {
     startingRef.current.delete(job.id);
+    logBufferRef.current?.flushNow();
     try {
       await invoke("cancel_download", { jobId: job.id });
     } catch (error) {
@@ -389,10 +749,20 @@ function App() {
               error: "",
               filepath: null,
               log: [],
+              skipped: false,
+              filesDone: 0,
+              filesTotal: undefined,
+              filePercent: 0,
+              entryIndex: 1,
+              stage: undefined,
             }
           : item,
       ),
     );
+  };
+
+  const clearCompleted = () => {
+    setJobs((previous) => previous.filter((job) => job.status !== "completed"));
   };
 
   const openFolder = async (path: string) => {
@@ -435,45 +805,57 @@ function App() {
     (job) => job.status === "starting" || job.status === "downloading",
   ).length;
 
+  const canAdvanced = Boolean(
+    info && info._type !== "playlist" && (info.duration ?? 0) > 1,
+  );
+
+  const previewRetry = () => {
+    if (!info || !settings) return;
+    void loadPreview(info.webpage_url || url.trim(), settings, tool);
+  };
+
   if (!settings || !engine) {
     return <BootScreen error={bootError} onRetry={loadApp} />;
   }
 
   return (
     <div className="app-shell">
-      <header className="deck-head">
-        <div className="brand">
-          <span className="brand-mark">
-            <Icon name="reel" size={26} />
-          </span>
-          <span className="brand-name">ClipFetch</span>
-        </div>
-        <div className="head-tools">
-          <EngineStatusView
-            engine={engine}
-            busy={engineBusy}
-            percent={enginePercent}
-            stage={engineStage}
-            onUpdate={() => void runEngineTask("update_ytdlp")}
-          />
-          {engine.installed && (
-            <button
-              type="button"
-              className="button ghost"
-              onClick={() => setSettingsOpen(true)}
-              aria-label="Ajustes"
-            >
-              <Icon name="settings" size={16} />
-              <span className="button-label">Ajustes</span>
-            </button>
-          )}
-        </div>
-      </header>
+      <TopBar
+        tool={tool}
+        onToolChange={changeTool}
+        engine={engine}
+        engineBusy={engineBusy}
+        enginePercent={enginePercent}
+        engineStage={engineStage}
+        engineUpdate={engineUpdate}
+        onUpdateEngine={() => void runEngineTask("update_ytdlp")}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
 
-      {engine.installed ? (
-        <main className="deck-main">
+      <div className="app-body">
+        <QueueRail
+          staged={staged}
+          jobs={jobs}
+          activeCount={activeCount}
+          onRemoveStaged={removeStaged}
+          onMoveStaged={moveStaged}
+          onReorderStaged={reorderStaged}
+          onExport={exportQueue}
+          onCancel={cancelJob}
+          onRetry={retryJob}
+          onOpenFolder={openFolder}
+          onRevealFile={revealFile}
+          onClearCompleted={clearCompleted}
+        />
+
+        <main className="canvas">
           {globalError && (
             <Notice onClose={() => setGlobalError("")}>{globalError}</Notice>
+          )}
+          {globalInfo && (
+            <Notice kind="info" onClose={() => setGlobalInfo("")}>
+              {globalInfo}
+            </Notice>
           )}
           {engineError && (
             <Notice
@@ -485,110 +867,50 @@ function App() {
             </Notice>
           )}
 
-          <section className="intake">
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                void analyze();
-              }}
-            >
-              <label htmlFor="source-url">Fuente</label>
-              <div className="intake-row">
-                <div className="intake-field">
-                  <Icon name="film" size={18} />
-                  <input
-                    id="source-url"
-                    value={url}
-                    onChange={(event) => setUrl(event.target.value)}
-                    placeholder="https://www.youtube.com/watch?v=…"
-                    spellCheck={false}
-                    autoFocus
-                  />
-                </div>
-                <button
-                  type="submit"
-                  className="button solid"
-                  disabled={analyzing || !url.trim()}
-                >
-                  {analyzing ? "Leyendo…" : "Cargar"}
-                </button>
-              </div>
-            </form>
-            <p className="hint">
-              YouTube, playlists, canales y otros sitios compatibles con yt-dlp.
-            </p>
-          </section>
-
-          {analysisError && (
-            <Notice
-              title="No se pudo leer la URL"
-              onClose={() => setAnalysisError("")}
-            >
-              {analysisError}
-            </Notice>
-          )}
-
-          {info ? (
-            <div className="source-grid">
-              <SourcePanel
-                info={info}
-                thumbnail={thumbnailOf(info)}
-                isPlaylist={isPlaylist}
-                onPlaylistChange={setIsPlaylist}
-              />
-              <TransferPanel
-                preset={preset}
-                onPresetChange={(value) => {
-                  setPreset(value);
-                  updateSettings({ preset: value });
-                }}
-                outputDir={settings.outputDir}
-                onOutputDirChange={(value) => updateSettings({ outputDir: value })}
-                onPickFolder={pickFolder}
-                onDownload={queueDownload}
-                isPlaylist={isPlaylist}
-              />
-            </div>
+          {engine.installed ? (
+            <ToolWorkspace
+              tool={tool}
+              mode={mode}
+              onModeChange={setMode}
+              canAdvanced={canAdvanced}
+              url={url}
+              onUrlChange={setUrl}
+              analyzing={analyzing}
+              elapsed={elapsed}
+              onAnalyze={() => void analyze()}
+              info={info}
+              analysisError={analysisError}
+              onClearAnalysisError={() => setAnalysisError("")}
+              preview={preview}
+              onRetryPreview={previewRetry}
+              preset={preset}
+              presetOptions={presets}
+              onPresetChange={changePreset}
+              outputDir={settings.outputDir}
+              onOutputDirChange={(value) => updateSettings({ outputDir: value })}
+              onPickFolder={pickFolder}
+              onStage={stageSimple}
+              isPlaylist={Boolean(isPlaylist)}
+              selection={selection}
+              positions={positions}
+              onToggleItem={toggleItem}
+              onSelectAll={selectAll}
+              onSelectNone={selectNone}
+              onSelectRange={selectRange}
+              onAddClips={stageClips}
+            />
           ) : (
-            <section className="empty-deck">
-              <div className="empty-reel" aria-hidden="true">
-                <Icon name="reel" size={30} />
-              </div>
-              <div>
-                <h2>Carga una fuente</h2>
-                <p>
-                  Pega una URL para ver el formato, la calidad y la carpeta antes de
-                  descargar.
-                </p>
-              </div>
-            </section>
+            <SetupScreen
+              engine={engine}
+              busy={engineBusy}
+              percent={enginePercent}
+              stage={engineStage}
+              error={engineError}
+              onInstall={() => void runEngineTask("install_engine")}
+            />
           )}
-
-          <QueuePanel
-            jobs={jobs}
-            activeCount={activeCount}
-            onCancel={cancelJob}
-            onRetry={retryJob}
-            onOpenFolder={openFolder}
-            onRevealFile={revealFile}
-          />
         </main>
-      ) : (
-        <SetupScreen
-          engine={engine}
-          busy={engineBusy}
-          percent={enginePercent}
-          stage={engineStage}
-          error={engineError}
-          onInstall={() => void runEngineTask("install_engine")}
-        />
-      )}
-
-      <footer className="deck-foot">
-        <span>ClipFetch 0.1.0</span>
-        <span>Código abierto / MIT</span>
-        <span>Descarga solo contenido propio o con permiso.</span>
-      </footer>
+      </div>
 
       {settingsOpen && engine.installed && (
         <SettingsDrawer

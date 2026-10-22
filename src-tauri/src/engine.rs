@@ -33,6 +33,14 @@ struct EngineProgress {
     percent: Option<f64>,
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineUpdate {
+    pub current: String,
+    pub latest: String,
+    pub update_available: bool,
+}
+
 pub fn engine_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let base = app
         .path()
@@ -296,4 +304,67 @@ pub async fn update_ytdlp(app: AppHandle) -> Result<EngineStatus, String> {
         .map_err(|e| format!("No se pudo crear la carpeta del motor: {e}"))?;
     download(&app, "yt-dlp", YTDLP_URL, &dir.join("yt-dlp.exe")).await?;
     Ok(status(&app))
+}
+
+fn version_key(value: &str) -> Vec<u64> {
+    value
+        .split('.')
+        .map(|part| part.trim().parse::<u64>().unwrap_or(0))
+        .collect()
+}
+
+fn is_newer(latest: &str, current: &str) -> bool {
+    let mut remote = version_key(latest);
+    let mut local = version_key(current);
+    let length = remote.len().max(local.len());
+    remote.resize(length, 0);
+    local.resize(length, 0);
+    remote > local
+}
+
+/// Lee la versión de la última nightly sin descargarla: GitHub redirige
+/// `/releases/latest/download/...` a `/releases/download/<tag>/...`.
+async fn latest_ytdlp_version() -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(format!("ClipFetch/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| format!("No se pudo crear el cliente HTTP: {e}"))?;
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        client.head(YTDLP_URL).send(),
+    )
+    .await
+    .map_err(|_| "GitHub tardó demasiado en responder".to_string())?
+    .map_err(|e| format!("No se pudo consultar la última versión de yt-dlp: {e}"))?;
+
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| "GitHub no devolvió la ubicación de la última versión".to_string())?;
+
+    location
+        .trim_end_matches('/')
+        .rsplit('/')
+        .nth(1)
+        .filter(|tag| !tag.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "No se pudo leer la versión desde la redirección de GitHub".to_string())
+}
+
+#[tauri::command]
+pub async fn check_engine_update(app: AppHandle) -> Result<Option<EngineUpdate>, String> {
+    let dir = engine_dir(&app)?;
+    let Some(current) = version_of(&dir.join("yt-dlp.exe"), &["--version"]) else {
+        return Ok(None);
+    };
+
+    let latest = latest_ytdlp_version().await?;
+    Ok(Some(EngineUpdate {
+        update_available: is_newer(&latest, &current),
+        current,
+        latest,
+    }))
 }

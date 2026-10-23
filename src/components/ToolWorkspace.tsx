@@ -26,6 +26,7 @@ interface ToolWorkspaceProps {
   onClearAnalysisError: () => void;
   preview: PreviewState;
   onRetryPreview: () => void;
+  onCancelPreview: () => void;
   preset: string;
   presetOptions: PresetOption[];
   onPresetChange: (value: string) => void;
@@ -58,6 +59,7 @@ export function ToolWorkspace({
   onClearAnalysisError,
   preview,
   onRetryPreview,
+  onCancelPreview,
   preset,
   presetOptions,
   onPresetChange,
@@ -327,11 +329,13 @@ export function ToolWorkspace({
               <TimelineEditor
                 kind={tool}
                 title={title}
+                sourceKey={info.id || info.webpage_url || title}
                 thumbnail={info.thumbnail}
                 duration={duration}
                 preview={preview}
                 formatLabel={format}
                 onRetryPreview={onRetryPreview}
+                onCancelPreview={onCancelPreview}
                 onAddClips={onAddClips}
               />
             </>

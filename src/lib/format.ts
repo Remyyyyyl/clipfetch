@@ -1,7 +1,6 @@
 import type { YtDlpInfo } from "../types";
 
 export const VIDEO_PRESETS = [
-  { value: "best", label: "Mejor calidad" },
   { value: "2160", label: "MP4 2160p" },
   { value: "1440", label: "MP4 1440p" },
   { value: "1080", label: "MP4 1080p" },
@@ -9,6 +8,29 @@ export const VIDEO_PRESETS = [
   { value: "480", label: "MP4 480p" },
   { value: "360", label: "MP4 360p" },
 ];
+
+/** Resoluciones ofrecidas por la app, de mayor a menor. */
+const VIDEO_HEIGHTS = [2160, 1440, 1080, 720, 480, 360] as const;
+
+/**
+ * Preset más alto que cubre la resolución real del vídeo analizado.
+ * Si el sitio no publica formatos utilizables, se usa 1080p como base.
+ */
+export function bestVideoPreset(info: YtDlpInfo | null | undefined): string {
+  const heights = (info?.formats ?? [])
+    .filter(
+      (format) =>
+        typeof format.height === "number" &&
+        format.height > 0 &&
+        Boolean(format.vcodec) &&
+        format.vcodec !== "none",
+    )
+    .map((format) => format.height as number);
+
+  if (heights.length === 0) return "1080";
+  const max = Math.max(...heights);
+  return String(VIDEO_HEIGHTS.find((height) => max >= height) ?? 360);
+}
 
 export const AUDIO_PRESETS = [
   { value: "mp3-320", label: "MP3 320 kbps" },
@@ -25,6 +47,7 @@ export const AUDIO_PRESETS = [
 
 const LEGACY_PRESET_LABELS: Record<string, string> = {
   mp3: "MP3 320 kbps",
+  best: "Máxima disponible",
 };
 
 export function presetLabel(value: string): string {

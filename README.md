@@ -27,8 +27,8 @@ SHA-256 del instalador 0.3.0:
 
 - **Barra de herramientas**: modo Vídeo y modo Audio, cada uno con su propio flujo.
 - **Bandeja de preparación**: todo lo que añades se acumula en la barra izquierda; se puede reordenar, quitar y **exportar de una vez**.
-- **Modo avanzado**: vista previa del vídeo con la línea de tiempo pegada debajo, loop, varios tramos y salida a la cola.
-- **Vídeo**: MP4 de 360p a 2160p, con H.264/AAC preferente hasta 1080p.
+- **Modo avanzado**: copia local de baja resolución (hasta 480p) con audio para editar con fluidez, imán de ajuste, regla descriptiva, atajos de teclado, control de volumen, loop, varios tramos y salida a la cola.
+- **Vídeo**: MP4 de 360p a 2160p, con H.264/AAC preferente hasta 1080p. Al cargar un vídeo se preselecciona su máxima resolución disponible; la calidad se puede cambiar a mano.
 - **Audio**: MP3 320/256/192/128, M4A 256/128, Opus 160, FLAC, WAV y audio original.
 - **Playlists y canales**: selector de vídeos con casillas y rangos.
 - **Cola con progreso**, cancelación, reintento, logs y «Limpiar completados».
@@ -66,6 +66,7 @@ src/                  Interfaz React + TypeScript
 src-tauri/            Backend Rust y configuración de Tauri
 src-tauri/src/engine.rs   Descarga, estado y actualización de yt-dlp/FFmpeg/Deno
 src-tauri/src/jobs.rs     Análisis, cola, recortes y ejecución de yt-dlp
+src-tauri/src/preview.rs  Copia local de 480p para el editor, con caché y progreso
 src-tauri/src/store.rs    state.json (ajustes e historial) con escritura atómica
 src-tauri/src/lib.rs      Comandos de Tauri
 ```
@@ -76,15 +77,15 @@ El motor se guarda en `%LOCALAPPDATA%\app.clipfetch.desktop\engine`:
 - `ffmpeg.exe` y `ffprobe.exe` desde `yt-dlp/FFmpeg-Builds`.
 - `deno.exe`, necesario para los desafíos JavaScript de YouTube.
 
-Los ajustes y el historial se guardan en `%LOCALAPPDATA%\app.clipfetch.desktop\state.json`.
+Los ajustes y el historial se guardan en `%LOCALAPPDATA%\app.clipfetch.desktop\state.json`. Las copias locales del editor viven en `%LOCALAPPDATA%\app.clipfetch.desktop\preview`: se conservan las 3 más recientes y se borran las de más de 7 días al preparar la siguiente.
 
 La app lanza `yt-dlp` como subproceso y lee eventos estructurados con `--progress-template` y `--print ...`. La única línea humana que interpreta es el aviso de archivo ya descargado («has already been downloaded»), para no dar por buena una descarga que no ocurrió.
 
-Los tramos se descargan con `--download-sections "*HH:MM:SS-HH:MM:SS"` (corte en keyframe, sin recodificar) y se guardan en una carpeta con el nombre del vídeo, con el rango como prefijo del archivo.
+Los tramos se descargan con `--download-sections "*HH:MM:SS-HH:MM:SS"` (corte en keyframe, sin recodificar) y se guardan en una carpeta con el nombre del vídeo, con el rango como prefijo del archivo. La copia local del editor es solo un proxy de baja resolución (hasta 480p) para previsualizar: no se usa para el corte final, que mantiene la calidad elegida.
 
 ## Limitaciones conocidas
 
-- **Vista previa:** usa el stream directo de yt-dlp (normalmente 360p, caduca en unas horas). En audio se pide un stream de solo audio. En sitios que solo ofrecen HLS puede no reproducirse; la línea de tiempo sigue funcionando con la duración conocida.
+- **Vista previa:** el modo avanzado descarga una copia local de baja resolución (hasta 480p) con audio para que el montaje se comporte como un archivo local (scrub instantáneo y teclado). Las copias se cachean y se limpian automáticamente; si no se pueden preparar, se usa el stream remoto de yt-dlp (normalmente 360p). En sitios con DRM o directos en vivo la vista previa puede no estar disponible; la línea de tiempo sigue funcionando con la duración conocida.
 - **Corte en keyframe:** al no recodificar, el clip puede incluir uno o dos segundos de más al principio.
 - **Más de 1080p:** el sitio suele servir VP9/AV1 dentro del MP4; reproductores antiguos pueden no abrirlo.
 - **Bandeja de preparación:** no se guarda al cerrar la app. Los trabajos ya exportados sí quedan en el historial.

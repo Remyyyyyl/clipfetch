@@ -17,7 +17,10 @@ export type IconName =
   | "check"
   | "chevron"
   | "external"
-  | "film";
+  | "film"
+  | "magnet"
+  | "volume"
+  | "volume-off";
 
 interface IconProps {
   name: IconName;
@@ -183,6 +186,28 @@ export function Icon({ name, size = 16, strokeWidth = 1.7, className }: IconProp
           <rect x="3" y="5" width="18" height="14" rx="1" />
           <path d="M7 5v14M17 5v14" />
           <path d="M7 8h.01M7 12h.01M7 16h.01M17 8h.01M17 12h.01M17 16h.01" />
+        </svg>
+      );
+    case "magnet":
+      return (
+        <svg {...common}>
+          <path d="M6 4H3v8a9 9 0 0 0 18 0V4h-3v8a6 6 0 0 1-12 0V4Z" />
+          <path d="M3 8h3M18 8h3" />
+        </svg>
+      );
+    case "volume":
+      return (
+        <svg {...common}>
+          <path d="M11 5 6 9H3v6h3l5 4V5Z" />
+          <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+          <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+        </svg>
+      );
+    case "volume-off":
+      return (
+        <svg {...common}>
+          <path d="M11 5 6 9H3v6h3l5 4V5Z" />
+          <path d="m16 9 5 6M21 9l-5 6" />
         </svg>
       );
   }

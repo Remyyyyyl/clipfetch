@@ -32,6 +32,26 @@ Pendiente tras la publicación:
 Hecho para la 0.3.0: README, hoja de ruta y versión actualizados; instalador
 publicado en la release `v0.3.0`.
 
+## 0.4 · Editor local
+
+Decisiones de la siguiente pasada del editor:
+
+- La vista previa del modo avanzado usa una **copia local de baja resolución
+  (hasta 480p) con audio** (`preview_stream` queda como respaldo remoto). Solo
+  se prepara al entrar en avanzado; en simple no se descarga nada.
+- La caché vive en `%LOCALAPPDATA%\app.clipfetch.desktop\preview`, conserva las
+  3 copias más recientes y se limpia sola.
+- El corte final sigue descargándose de la fuente con `--download-sections` en la
+  calidad elegida; el proxy no se recodifica.
+- El imán (activo por defecto, `S`, `Alt` para saltarlo) atrae a la aguja, a los
+  bordes de tramos preparados y a las marcas de la regla.
+- La pista tiene regla con tiempos reales, límites `Entrada`/`Salida`, mínimo de
+  1 s y aviso visual cuando se intenta cruzar.
+- Atajos: `Espacio`, flechas ±1 s, `Mayús` + flechas ±10 s, `I`/`O`, `S` y `M`.
+- Se elimina «Mejor calidad»: al cargar cada vídeo se preselecciona su resolución
+  máxima real (hasta 2160p) y se puede cambiar a mano. En playlists se usa 1080p
+  como base.
+
 ## Sprint 1 (hecho)
 
 | Punto | Qué se hizo |

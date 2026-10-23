@@ -1,5 +1,6 @@
 mod engine;
 mod jobs;
+mod preview;
 mod store;
 
 use tauri::Manager;
@@ -50,6 +51,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(jobs::AppState::default())
+        .manage(preview::PreviewState::default())
         .invoke_handler(tauri::generate_handler![
             engine::engine_status,
             engine::install_engine,
@@ -59,6 +61,8 @@ pub fn run() {
             jobs::start_download,
             jobs::cancel_download,
             jobs::preview_stream,
+            preview::prepare_preview,
+            preview::cancel_preview,
             store::load_state,
             store::save_state,
             default_download_dir,
@@ -71,6 +75,9 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 if let Some(state) = app_handle.try_state::<jobs::AppState>() {
                     jobs::kill_all(state.inner());
+                }
+                if let Some(state) = app_handle.try_state::<preview::PreviewState>() {
+                    preview::kill_all(state.inner());
                 }
             }
         });

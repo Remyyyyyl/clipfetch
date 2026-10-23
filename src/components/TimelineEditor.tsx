@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -8,39 +9,71 @@ import {
 } from "react";
 import type { Clip, PreviewState, ToolKind } from "../types";
 import { formatClock, formatDuration } from "../lib/format";
+import {
+  buildRulerTicks,
+  clamp,
+  findSnap,
+  isEditableTarget,
+  isInteractiveTarget,
+  type SnapCandidate,
+} from "../lib/timeline";
 import { Icon } from "./Icon";
 
 interface TimelineEditorProps {
   kind: ToolKind;
   title: string;
+  sourceKey: string;
   thumbnail?: string;
   duration: number;
   preview: PreviewState;
   formatLabel: string;
   onRetryPreview: () => void;
+  onCancelPreview: () => void;
   onAddClips: (ranges: Array<{ start: number; end: number }>) => void;
 }
 
 const MIN_CLIP = 1;
+const SNAP_PX = 8;
+const SNAP_MAX_SECONDS = 2;
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
+interface DragState {
+  mode: "start" | "end" | "seek";
+  rect: DOMRect;
+  wasPlaying: boolean;
+}
+
+interface BlockedState {
+  side: "start" | "end";
+}
+
+interface HoverState {
+  time: number;
+}
+
+interface SnapState {
+  time: number;
+  label: SnapCandidate["label"];
 }
 
 function secondsAt(clientX: number, rect: DOMRect, total: number): number {
   if (rect.width <= 0) return 0;
-  const ratio = (clientX - rect.left) / rect.width;
-  return clamp(Math.round(ratio * total), 0, total);
+  return clamp(((clientX - rect.left) / rect.width) * total, 0, total);
+}
+
+function formatVolume(value: number): string {
+  return `${Math.round(value * 100)} %`;
 }
 
 export function TimelineEditor({
   kind,
   title,
+  sourceKey,
   thumbnail,
   duration,
   preview,
   formatLabel,
   onRetryPreview,
+  onCancelPreview,
   onAddClips,
 }: TimelineEditorProps) {
   const total = Math.max(MIN_CLIP, Math.floor(duration || 0));
@@ -51,90 +84,131 @@ export function TimelineEditor({
   const [playing, setPlaying] = useState(false);
   const [loop, setLoop] = useState(true);
   const [mediaFailed, setMediaFailed] = useState(false);
+  const [snap, setSnap] = useState(true);
+  const [snapTarget, setSnapTarget] = useState<SnapState | null>(null);
+  const [blocked, setBlocked] = useState<BlockedState | null>(null);
+  const [hover, setHover] = useState<HoverState | null>(null);
+  const [dragging, setDragging] = useState<"start" | "end" | "seek" | null>(null);
+  const [seeking, setSeeking] = useState(false);
+  const [volume, setVolume] = useState(1);
+  const [muted, setMuted] = useState(false);
 
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef<{ mode: "start" | "end" | "seek"; rect: DOMRect } | null>(null);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const dragRef = useRef<DragState | null>(null);
+  const blockedTimerRef = useRef<number | null>(null);
+  const snapClearTimerRef = useRef<number | null>(null);
+  const seekFrameRef = useRef<number | null>(null);
+  const pendingSeekRef = useRef<number | null>(null);
+  const previewOnlySeekRef = useRef(false);
 
   const setMedia = (element: HTMLVideoElement | HTMLAudioElement | null) => {
     mediaRef.current = element;
   };
 
+  const rulerTicks = useMemo(() => buildRulerTicks(total), [total]);
+
+  // Cambiar de vídeo reinicia el montaje. Cambiar de URL de preview no.
   useEffect(() => {
+    pendingSeekRef.current = null;
+    previewOnlySeekRef.current = false;
+    if (seekFrameRef.current !== null) {
+      cancelAnimationFrame(seekFrameRef.current);
+      seekFrameRef.current = null;
+    }
     setClips([]);
     setStart(0);
     setEnd(Math.min(30, total));
     setCurrent(0);
     setPlaying(false);
     setMediaFailed(false);
-  }, [title, total, kind]);
+    setSnapTarget(null);
+    setBlocked(null);
+    setHover(null);
+    setDragging(null);
+    dragRef.current = null;
+  }, [sourceKey, total]);
 
   useEffect(() => {
     setPlaying(false);
-    setCurrent(0);
     setMediaFailed(false);
+    setSeeking(false);
   }, [preview.url]);
 
+  useEffect(() => {
+    const media = mediaRef.current;
+    if (!media) return;
+    media.volume = volume;
+    media.muted = muted;
+  }, [volume, muted, preview.url]);
+
+  useEffect(() => {
+    return () => {
+      if (blockedTimerRef.current !== null) window.clearTimeout(blockedTimerRef.current);
+      if (snapClearTimerRef.current !== null) {
+        window.clearTimeout(snapClearTimerRef.current);
+      }
+      if (seekFrameRef.current !== null) cancelAnimationFrame(seekFrameRef.current);
+    };
+  }, []);
+
+  const flashBlocked = useCallback((side: "start" | "end") => {
+    setBlocked({ side });
+    if (blockedTimerRef.current !== null) window.clearTimeout(blockedTimerRef.current);
+    blockedTimerRef.current = window.setTimeout(() => {
+      blockedTimerRef.current = null;
+      setBlocked(null);
+    }, 900);
+  }, []);
+
+  const clearBlocked = useCallback(() => {
+    if (blockedTimerRef.current !== null) {
+      window.clearTimeout(blockedTimerRef.current);
+      blockedTimerRef.current = null;
+    }
+    setBlocked(null);
+  }, []);
+
   const seek = useCallback(
-    (seconds: number) => {
+    (seconds: number, movePlayhead = true) => {
       const target = clamp(seconds, 0, total);
-      const media = mediaRef.current;
-      if (media && media.readyState > 0) {
+      previewOnlySeekRef.current = !movePlayhead;
+      if (movePlayhead) setCurrent(target);
+      pendingSeekRef.current = target;
+      if (seekFrameRef.current !== null) return;
+
+      seekFrameRef.current = requestAnimationFrame(() => {
+        seekFrameRef.current = null;
+        const pending = pendingSeekRef.current;
+        if (pending === null) return;
+        const media = mediaRef.current;
+        if (!media || media.readyState === 0) return;
         try {
-          media.currentTime = target;
+          const fastSeek = (
+            media as HTMLMediaElement & { fastSeek?: (time: number) => void }
+          ).fastSeek;
+          if (typeof fastSeek === "function") fastSeek.call(media, pending);
+          else media.currentTime = pending;
         } catch {
           // Sin metadatos todavía: la aguja se mueve igual.
         }
-      }
-      setCurrent(target);
+      });
     },
     [total],
   );
 
-  // Reproducción con parada o bucle al final del tramo.
-  useEffect(() => {
-    if (!playing) return;
-    let frame = 0;
-
-    const tick = () => {
-      const media = mediaRef.current;
-      if (!media) return;
-      const time = media.currentTime;
-      setCurrent(time);
-      if (time >= end - 0.05) {
-        if (loop) {
-          try {
-            media.currentTime = start;
-          } catch {
-            // Sin metadatos.
-          }
-          setCurrent(start);
-          frame = requestAnimationFrame(tick);
-          return;
-        }
-        media.pause();
-        setCurrent(end);
-        setPlaying(false);
-        return;
-      }
-      frame = requestAnimationFrame(tick);
-    };
-
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [playing, end, start, loop]);
-
-  const togglePlay = () => {
+  const togglePlay = useCallback(() => {
     const media = mediaRef.current;
     if (!media || preview.status !== "ready" || mediaFailed) return;
 
     if (!media.paused) {
       media.pause();
-      setPlaying(false);
       return;
     }
 
     const from = current < start || current >= end ? start : current;
+    previewOnlySeekRef.current = false;
     if (Math.abs(media.currentTime - from) > 0.2) {
       try {
         media.currentTime = from;
@@ -150,19 +224,67 @@ export function TimelineEditor({
     } else {
       setPlaying(true);
     }
+  }, [preview.status, mediaFailed, current, start, end]);
+
+  const focusAndToggle = () => {
+    sectionRef.current?.focus({ preventScroll: true });
+    togglePlay();
   };
 
-  const markStart = () => {
-    const value = clamp(Math.round(current), 0, total - MIN_CLIP);
+  // La aguja se mueve con cada frame mientras hay reproducción.
+  useEffect(() => {
+    if (!playing) return;
+    let frame = 0;
+
+    const tick = () => {
+      const media = mediaRef.current;
+      if (!media) return;
+      const time = media.currentTime;
+      setCurrent(time);
+
+      if (time >= end - 0.04) {
+        if (loop) {
+          try {
+            media.currentTime = start;
+          } catch {
+            // Sin metadatos.
+          }
+          setCurrent(start);
+          frame = requestAnimationFrame(tick);
+          return;
+        }
+        media.pause();
+        setCurrent(end);
+        setPlaying(false);
+        return;
+      }
+
+      frame = requestAnimationFrame(tick);
+    };
+
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [playing, end, start, loop]);
+
+  const markStart = useCallback(() => {
+    const raw = Math.round(current);
+    const max = Math.max(0, end - MIN_CLIP);
+    const value = clamp(raw, 0, max);
+    if (raw > max) flashBlocked("start");
+    else clearBlocked();
     setStart(value);
-    if (end <= value) setEnd(Math.min(total, value + MIN_CLIP));
-  };
+    seek(value);
+  }, [current, end, flashBlocked, clearBlocked, seek]);
 
-  const markEnd = () => {
-    const value = clamp(Math.round(current), MIN_CLIP, total);
+  const markEnd = useCallback(() => {
+    const raw = Math.round(current);
+    const min = Math.min(total, start + MIN_CLIP);
+    const value = clamp(raw, min, total);
+    if (raw < min) flashBlocked("end");
+    else clearBlocked();
     setEnd(value);
-    if (start >= value) setStart(Math.max(0, value - MIN_CLIP));
-  };
+    seek(value);
+  }, [current, start, total, flashBlocked, clearBlocked, seek]);
 
   const addWorkingClip = () => {
     if (end - start < MIN_CLIP) return;
@@ -183,6 +305,65 @@ export function TimelineEditor({
     setClips([]);
   };
 
+  const baseSnapCandidates = useMemo<SnapCandidate[]>(() => {
+    const list: SnapCandidate[] = [];
+    for (const clip of clips) {
+      list.push({ time: clip.start, label: "Corte" });
+      list.push({ time: clip.end, label: "Corte" });
+    }
+    for (const tick of rulerTicks) {
+      list.push({ time: tick.time, label: "Marca" });
+    }
+
+    const seen = new Set<number>();
+    return list.filter((candidate) => {
+      if (seen.has(candidate.time)) return false;
+      seen.add(candidate.time);
+      return true;
+    });
+  }, [clips, rulerTicks]);
+
+  const resolveTime = useCallback(
+    (raw: number, rect: DOMRect, bypass: boolean, includePlayhead = true) => {
+      const rounded = Math.round(raw);
+      if (!snap || bypass) {
+        return { value: rounded, target: null as SnapState | null };
+      }
+
+      const threshold = Math.min(
+        SNAP_MAX_SECONDS,
+        (SNAP_PX / Math.max(1, rect.width)) * total,
+      );
+      const playhead = Math.round(current);
+      if (includePlayhead && Math.abs(playhead - raw) <= threshold) {
+        return {
+          value: playhead,
+          target: { time: playhead, label: "Aguja" as const },
+        };
+      }
+
+      const found = findSnap(raw, baseSnapCandidates, threshold);
+      return found
+        ? {
+            value: found.time,
+            target: { time: found.time, label: found.label },
+          }
+        : { value: rounded, target: null as SnapState | null };
+    },
+    [snap, total, current, baseSnapCandidates],
+  );
+
+  const beginDrag = (mode: "start" | "end" | "seek", rect: DOMRect) => {
+    const media = mediaRef.current;
+    const wasPlaying = media ? !media.paused && !media.ended : false;
+    if (wasPlaying && media) media.pause();
+    clearBlocked();
+    dragRef.current = { mode, rect, wasPlaying };
+    setDragging(mode);
+    setSnapTarget(null);
+    setHover(null);
+  };
+
   const onTrackPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     const rect = event.currentTarget.getBoundingClientRect();
@@ -191,50 +372,124 @@ export function TimelineEditor({
     } catch {
       // Puntero sintético o ya liberado.
     }
-    dragRef.current = { mode: "seek", rect };
-    seek(secondsAt(event.clientX, rect, total));
+    beginDrag("seek", rect);
+    sectionRef.current?.focus({ preventScroll: true });
+    const resolved = resolveTime(
+      secondsAt(event.clientX, rect, total),
+      rect,
+      event.altKey,
+      false,
+    );
+    setSnapTarget(resolved.target);
+    seek(resolved.value);
   };
 
   const onHandlePointerDown =
     (mode: "start" | "end") => (event: ReactPointerEvent<HTMLButtonElement>) => {
       if (event.button !== 0) return;
-      event.preventDefault();
       event.stopPropagation();
       const rect = trackRef.current?.getBoundingClientRect();
       if (!rect) return;
+      event.currentTarget.focus();
       try {
         event.currentTarget.setPointerCapture(event.pointerId);
       } catch {
         // Puntero sintético: seguimos con los eventos del track.
       }
-      dragRef.current = { mode, rect };
+      beginDrag(mode, rect);
+      seek(mode === "start" ? start : end, false);
     };
 
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
-    if (!drag) return;
-    const value = secondsAt(event.clientX, drag.rect, total);
-
-    if (drag.mode === "seek") {
-      seek(value);
+    if (!drag) {
+      const rect = trackRef.current?.getBoundingClientRect();
+      if (rect) setHover({ time: secondsAt(event.clientX, rect, total) });
       return;
     }
 
-    seek(value);
+    const raw = secondsAt(event.clientX, drag.rect, total);
+    const resolved = resolveTime(raw, drag.rect, event.altKey, drag.mode !== "seek");
+    setSnapTarget(resolved.target);
+
+    if (drag.mode === "seek") {
+      seek(resolved.value);
+      return;
+    }
+
     if (drag.mode === "start") {
-      setStart(clamp(value, 0, end - MIN_CLIP));
+      const max = Math.max(0, end - MIN_CLIP);
+      const next = clamp(resolved.value, 0, max);
+      if (resolved.value > max) {
+        setSnapTarget(null);
+        flashBlocked("start");
+      } else {
+        clearBlocked();
+      }
+      setStart(next);
+      seek(next, false);
     } else {
-      setEnd(clamp(value, start + MIN_CLIP, total));
+      const min = Math.min(total, start + MIN_CLIP);
+      const next = clamp(resolved.value, min, total);
+      if (resolved.value < min) {
+        setSnapTarget(null);
+        flashBlocked("end");
+      } else {
+        clearBlocked();
+      }
+      setEnd(next);
+      seek(next, false);
     }
   };
 
-  const onPointerUp = () => {
+  const finishDrag = (event?: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag) return;
     dragRef.current = null;
+    setDragging(null);
+    setHover(null);
+
+    if (event) {
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      } catch {
+        // La captura ya se liberó.
+      }
+    }
+
+    if (snapClearTimerRef.current !== null) {
+      window.clearTimeout(snapClearTimerRef.current);
+    }
+    snapClearTimerRef.current = window.setTimeout(() => setSnapTarget(null), 650);
+
+    if (drag.wasPlaying) {
+      const media = mediaRef.current;
+      if (media && media.paused) {
+        const resumeAt = current < start || current >= end ? start : current;
+        previewOnlySeekRef.current = false;
+        if (Math.abs(media.currentTime - resumeAt) > 0.05) {
+          try {
+            media.currentTime = resumeAt;
+          } catch {
+            // Sin metadatos.
+          }
+        }
+        setCurrent(resumeAt);
+        const result = media.play();
+        if (result) result.catch(() => setPlaying(false));
+      }
+    }
+  };
+
+  const onTrackPointerLeave = () => {
+    if (!dragRef.current) setHover(null);
   };
 
   const onHandleKey =
     (mode: "start" | "end") => (event: ReactKeyboardEvent<HTMLButtonElement>) => {
       const value = mode === "start" ? start : end;
+      const min = mode === "start" ? 0 : start + MIN_CLIP;
+      const max = mode === "start" ? end - MIN_CLIP : total;
       const step = event.shiftKey ? 10 : 1;
       let next = value;
 
@@ -248,58 +503,177 @@ export function TimelineEditor({
           next += step;
           break;
         case "Home":
-          next = 0;
+          next = min;
           break;
         case "End":
-          next = total;
+          next = max;
           break;
         default:
           return;
       }
 
       event.preventDefault();
-      if (mode === "start") {
-        const clamped = clamp(next, 0, end - MIN_CLIP);
-        setStart(clamped);
-        seek(clamped);
-      } else {
-        const clamped = clamp(next, start + MIN_CLIP, total);
-        setEnd(clamped);
-        seek(clamped);
+      event.stopPropagation();
+      if (next < min || next > max) flashBlocked(mode);
+      else clearBlocked();
+      next = clamp(next, min, max);
+      if (mode === "start") setStart(next);
+      else setEnd(next);
+      seek(next, false);
+    };
+
+  const shortcutRef = useRef({
+    togglePlay,
+    seek,
+    current,
+    total,
+    markStart,
+    markEnd,
+  });
+  shortcutRef.current = { togglePlay, seek, current, total, markStart, markEnd };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) {
+        return;
+      }
+      if (isEditableTarget(event.target)) return;
+      if (isInteractiveTarget(event.target)) return;
+      if (event.repeat && event.key === " ") return;
+
+      const shortcuts = shortcutRef.current;
+      switch (event.key) {
+        case " ":
+          event.preventDefault();
+          shortcuts.togglePlay();
+          break;
+        case "ArrowLeft":
+        case "ArrowRight": {
+          event.preventDefault();
+          const direction = event.key === "ArrowLeft" ? -1 : 1;
+          shortcuts.seek(
+            clamp(
+              shortcuts.current + direction * (event.shiftKey ? 10 : 1),
+              0,
+              shortcuts.total,
+            ),
+          );
+          break;
+        }
+        case "Home":
+          event.preventDefault();
+          shortcuts.seek(0);
+          break;
+        case "End":
+          event.preventDefault();
+          shortcuts.seek(shortcuts.total);
+          break;
+        default: {
+          const key = event.key.toLowerCase();
+          if (key === "i") {
+            event.preventDefault();
+            shortcuts.markStart();
+          } else if (key === "o") {
+            event.preventDefault();
+            shortcuts.markEnd();
+          } else if (key === "s") {
+            event.preventDefault();
+            setSnap((value) => !value);
+          } else if (key === "m") {
+            event.preventDefault();
+            setMuted((value) => !value);
+          }
+        }
       }
     };
 
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const ready = preview.status === "ready" && Boolean(preview.url) && !mediaFailed;
+  const preparing = preview.status === "loading" && preview.local !== false;
   const startPercent = (start / total) * 100;
   const endPercent = (end / total) * 100;
   const playheadPercent = (clamp(current, 0, total) / total) * 100;
   const clipLength = end - start;
-  const ticks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => Math.round(total * ratio));
   const isAudio = kind === "audio";
+  const progress = preview.progress ?? 0;
+  const snapPercent = snapTarget ? (snapTarget.time / total) * 100 : null;
+  const hoverPercent = hover ? (hover.time / total) * 100 : null;
+
+  const mediaEvents = {
+    onPlay: () => {
+      previewOnlySeekRef.current = false;
+      setPlaying(true);
+    },
+    onPause: () => {
+      setPlaying(false);
+      const media = mediaRef.current;
+      if (media) setCurrent(media.currentTime);
+    },
+    onEnded: () => {
+      const media = mediaRef.current;
+      if (loop && media) {
+        try {
+          media.currentTime = start;
+        } catch {
+          // Sin metadatos.
+        }
+        setCurrent(start);
+        const result = media.play();
+        if (result) {
+          result.then(() => setPlaying(true)).catch(() => setPlaying(false));
+        }
+        return;
+      }
+      setPlaying(false);
+    },
+    onError: () => {
+      setPlaying(false);
+      setMediaFailed(true);
+    },
+    onTimeUpdate: () => {
+      if (previewOnlySeekRef.current) return;
+      const media = mediaRef.current;
+      if (media) setCurrent(media.currentTime);
+    },
+    onSeeking: () => setSeeking(true),
+    onSeeked: () => {
+      setSeeking(false);
+      if (previewOnlySeekRef.current) return;
+      const media = mediaRef.current;
+      if (media && media.paused) setCurrent(media.currentTime);
+    },
+    onLoadedMetadata: () => {
+      const media = mediaRef.current;
+      if (!media) return;
+      previewOnlySeekRef.current = false;
+      media.volume = volume;
+      media.muted = muted;
+      if (current > 0.05) {
+        try {
+          media.currentTime = clamp(current, 0, total);
+        } catch {
+          // Sin metadatos utilizables.
+        }
+      }
+    },
+  };
 
   return (
-    <section className="tl-editor" aria-label="Editor de tramos">
-      <div className={`tl-monitor${isAudio ? " is-audio" : ""}`}>
+    <section
+      ref={sectionRef}
+      className="tl-editor"
+      aria-label="Editor de tramos"
+      tabIndex={-1}
+    >
+      <div className={`tl-monitor${isAudio ? " is-audio" : ""}${ready ? " is-ready" : ""}`}>
         {ready ? (
           isAudio ? (
             <>
-              <audio
-                ref={setMedia}
-                src={preview.url}
-                preload="metadata"
-                onTimeUpdate={() => {
-                  const media = mediaRef.current;
-                  if (media && !playing) setCurrent(media.currentTime);
-                }}
-                onPause={() => {
-                  setPlaying(false);
-                  const media = mediaRef.current;
-                  if (media) setCurrent(media.currentTime);
-                }}
-                onEnded={() => setPlaying(false)}
-                onError={() => setMediaFailed(true)}
-              />
-              <div className="tl-audio-card">
+              <audio ref={setMedia} src={preview.url} preload="auto" {...mediaEvents} />
+              <div className="tl-audio-card" onClick={focusAndToggle}>
                 {thumbnail ? (
                   <img src={thumbnail} alt="" referrerPolicy="no-referrer" />
                 ) : (
@@ -320,19 +694,11 @@ export function TimelineEditor({
             <video
               ref={setMedia}
               src={preview.url}
-              preload="metadata"
+              preload="auto"
               playsInline
-              onTimeUpdate={() => {
-                const media = mediaRef.current;
-                if (media && !playing) setCurrent(media.currentTime);
-              }}
-              onPause={() => {
-                setPlaying(false);
-                const media = mediaRef.current;
-                if (media) setCurrent(media.currentTime);
-              }}
-              onEnded={() => setPlaying(false)}
-              onError={() => setMediaFailed(true)}
+              onClick={focusAndToggle}
+              title={playing ? "Pausar" : "Reproducir"}
+              {...mediaEvents}
             />
           )
         ) : (
@@ -346,7 +712,36 @@ export function TimelineEditor({
             )}
             <div className="tl-overlay">
               {preview.status === "loading" ? (
-                <p>Cargando vista previa…</p>
+                <>
+                  <p className="tl-overlay-title">
+                    {preparing ? "Preparando la copia local" : "Conectando con el vídeo"}
+                  </p>
+                  {preparing && (
+                    <div
+                      className="tl-progress"
+                      role="progressbar"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={Math.round(progress)}
+                    >
+                      <span style={{ width: `${clamp(progress, 0, 100)}%` }} />
+                    </div>
+                  )}
+                  <p>
+                    {preview.detail ||
+                      (preparing
+                        ? "Descargando una copia de baja resolución para editar con fluidez."
+                        : "Buscando el stream del sitio…")}
+                  </p>
+                  {preparing && (
+                    <p className="hint">Puedes marcar el tramo mientras termina.</p>
+                  )}
+                  {preparing && (
+                    <button type="button" className="button tiny" onClick={onCancelPreview}>
+                      Cancelar
+                    </button>
+                  )}
+                </>
               ) : preview.status === "idle" ? (
                 <button type="button" className="button tiny" onClick={onRetryPreview}>
                   Cargar vista previa
@@ -366,61 +761,168 @@ export function TimelineEditor({
             </div>
           </>
         )}
+
         {ready && (
-          <span className="tl-badge mono">{isAudio ? "Solo audio" : "Vista previa"}</span>
+          <span
+            className={`tl-badge mono${preview.local ? " is-local" : ""}`}
+            title={
+              preview.local
+                ? "Copia local de baja resolución para editar. El corte final se descarga en la calidad elegida."
+                : "La copia local no está disponible; se usa el stream del sitio."
+            }
+          >
+            {isAudio
+              ? preview.local
+                ? "Audio local"
+                : "Audio remoto"
+              : preview.local
+                ? "Copia local"
+                : "Stream remoto"}
+          </span>
+        )}
+        {dragging && dragging !== "seek" ? (
+          <span className="tl-seek-badge mono">
+            {dragging === "start" ? "Entrada" : "Salida"}{" "}
+            {formatClock(dragging === "start" ? start : end)}
+          </span>
+        ) : (
+          seeking &&
+          ready && <span className="tl-seek-badge mono">Buscando…</span>
         )}
       </div>
 
       <div className="tl-transport">
-        <button
-          type="button"
-          className="tl-play"
-          onClick={togglePlay}
-          disabled={!ready}
-          aria-label={playing ? "Pausar" : "Reproducir el tramo"}
-        >
-          <Icon name={playing ? "pause" : "play"} size={15} />
-          <span>{playing ? "Pausar" : "Reproducir"}</span>
-        </button>
-
-        <span className="mono tl-time">
-          {formatClock(current)} / {formatClock(total)}
-        </span>
-
-        <span className="mono tl-range-readout">
-          {formatClock(start)} → {formatClock(end)}
-          <span className="tl-range-length">{formatDuration(clipLength)}</span>
-        </span>
-
-        <div className="tl-marks">
-          <button type="button" className="button tiny" onClick={markStart}>
-            Marcar inicio
-          </button>
-          <button type="button" className="button tiny" onClick={markEnd}>
-            Marcar fin
-          </button>
+        <div className="tl-transport-main">
           <button
             type="button"
-            className={`button tiny tl-loop${loop ? " is-on" : ""}`}
-            onClick={() => setLoop((value) => !value)}
-            aria-pressed={loop}
-            title="Repetir el tramo al llegar al final"
+            className="tl-play"
+            onClick={togglePlay}
+            disabled={!ready}
+            aria-label={playing ? "Pausar" : "Reproducir el tramo"}
           >
-            <Icon name="refresh" size={12} />
-            Loop
+            <Icon name={playing ? "pause" : "play"} size={15} />
+            <span>{playing ? "Pausar" : "Reproducir"}</span>
           </button>
+
+          <span className="mono tl-time">
+            {formatClock(current)} / {formatClock(total)}
+          </span>
+
+          <div className="tl-selection-readout mono">
+            <span>
+              <span className="tl-readout-label">Entrada</span>
+              {formatClock(start)}
+            </span>
+            <span>
+              <span className="tl-readout-label">Duración</span>
+              {formatClock(clipLength)}
+            </span>
+            <span>
+              <span className="tl-readout-label">Salida</span>
+              {formatClock(end)}
+            </span>
+          </div>
+
+          <div className="tl-volume">
+            <button
+              type="button"
+              className="icon-button"
+              onClick={() => setMuted((value) => !value)}
+              aria-label={muted ? "Activar sonido" : "Silenciar"}
+              aria-pressed={muted}
+              title="Silencio (M)"
+              disabled={!ready}
+            >
+              <Icon name={muted ? "volume-off" : "volume"} size={15} />
+            </button>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={muted ? 0 : volume}
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                setVolume(next);
+                setMuted(next === 0);
+              }}
+              aria-label="Volumen"
+              aria-valuetext={formatVolume(muted ? 0 : volume)}
+              disabled={!ready}
+            />
+          </div>
+        </div>
+
+        <div className="tl-transport-tools">
+          <div className="tl-marks">
+            <button
+              type="button"
+              className="button tiny"
+              onClick={markStart}
+              title="Marcar entrada en la aguja (I)"
+            >
+              Marcar entrada
+            </button>
+            <button
+              type="button"
+              className="button tiny"
+              onClick={markEnd}
+              title="Marcar salida en la aguja (O)"
+            >
+              Marcar salida
+            </button>
+            <button
+              type="button"
+              className={`button tiny tl-snap${snap ? " is-on" : ""}`}
+              onClick={() => setSnap((value) => !value)}
+              aria-pressed={snap}
+              title="Imán: S. Mantén Alt al arrastrar para desactivarlo."
+            >
+              <Icon name="magnet" size={12} />
+              Imán
+            </button>
+            <button
+              type="button"
+              className={`button tiny tl-loop${loop ? " is-on" : ""}`}
+              onClick={() => setLoop((value) => !value)}
+              aria-pressed={loop}
+              title="Repetir el tramo al llegar al final"
+            >
+              <Icon name="refresh" size={12} />
+              Loop
+            </button>
+          </div>
         </div>
       </div>
 
       <div
         ref={trackRef}
-        className="tl-track"
+        className={`tl-track${dragging ? " is-dragging" : ""}${snapTarget ? " has-snap" : ""}`}
         onPointerDown={onTrackPointerDown}
         onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
+        onPointerUp={finishDrag}
+        onPointerCancel={() => finishDrag()}
+        onPointerLeave={onTrackPointerLeave}
         role="presentation"
       >
+        <div className="tl-ruler" aria-hidden="true">
+          {rulerTicks.map((tick, index) => (
+            <span
+              key={tick.time}
+              className="tl-tick"
+              style={{ left: `${(tick.time / total) * 100}%` }}
+            >
+              <span
+                className={`tl-tick-label${index === 0 ? " is-first" : ""}${
+                  index === rulerTicks.length - 1 ? " is-last" : ""
+                }`}
+              >
+                {tick.label}
+              </span>
+            </span>
+          ))}
+        </div>
+
         {clips.map((clip) => (
           <span
             key={clip.id}
@@ -437,42 +939,111 @@ export function TimelineEditor({
           style={{ left: `${startPercent}%`, width: `${endPercent - startPercent}%` }}
         />
 
+        {hoverPercent !== null && !dragging && (
+          <>
+            <span className="tl-hover" style={{ left: `${hoverPercent}%` }} />
+            <span
+              className="tl-hover-tag mono"
+              style={{ left: `${clamp(hoverPercent, 4, 96)}%` }}
+            >
+              {formatClock(Math.round(hover?.time ?? 0))}
+            </span>
+          </>
+        )}
+
+        {snapTarget && snapPercent !== null && (
+          <span className="tl-snap-guide" style={{ left: `${snapPercent}%` }}>
+            <span className="tl-snap-tag mono">
+              {snapTarget.label} {formatClock(snapTarget.time)}
+            </span>
+          </span>
+        )}
+
         <span className="tl-playhead" style={{ left: `${playheadPercent}%` }} />
+
+        {clipLength <= MIN_CLIP && (
+          <span
+            className="tl-min-gap"
+            style={{ left: `${(startPercent + endPercent) / 2}%` }}
+          >
+            mín. 1 s
+          </span>
+        )}
 
         <button
           type="button"
-          className="tl-handle"
+          className={`tl-handle is-start${dragging === "start" ? " is-active" : ""}${
+            blocked?.side === "start" ? " is-blocked" : ""
+          }`}
           style={{ left: `${startPercent}%` }}
           role="slider"
-          aria-label="Inicio del tramo"
+          aria-label="Entrada del tramo"
           aria-orientation="horizontal"
           aria-valuemin={0}
-          aria-valuemax={total}
+          aria-valuemax={Math.max(0, end - MIN_CLIP)}
           aria-valuenow={start}
           aria-valuetext={formatClock(start)}
+          aria-describedby="tl-limit-status"
           onPointerDown={onHandlePointerDown("start")}
           onKeyDown={onHandleKey("start")}
         />
         <button
           type="button"
-          className="tl-handle"
+          className={`tl-handle is-end${dragging === "end" ? " is-active" : ""}${
+            blocked?.side === "end" ? " is-blocked" : ""
+          }`}
           style={{ left: `${endPercent}%` }}
           role="slider"
-          aria-label="Fin del tramo"
+          aria-label="Salida del tramo"
           aria-orientation="horizontal"
-          aria-valuemin={0}
+          aria-valuemin={Math.min(total, start + MIN_CLIP)}
           aria-valuemax={total}
           aria-valuenow={end}
           aria-valuetext={formatClock(end)}
+          aria-describedby="tl-limit-status"
           onPointerDown={onHandlePointerDown("end")}
           onKeyDown={onHandleKey("end")}
         />
       </div>
 
-      <div className="tl-ticks mono" aria-hidden="true">
-        {ticks.map((tick, index) => (
-          <span key={`${tick}-${index}`}>{tick === 0 ? "0:00" : formatDuration(tick)}</span>
-        ))}
+      <div className="tl-foot">
+        <p
+          id="tl-limit-status"
+          className={`tl-status${blocked ? " is-blocked" : ""}`}
+          role="status"
+          aria-live="polite"
+        >
+          {blocked
+            ? blocked.side === "start"
+              ? "La entrada no puede alcanzar la salida. Mínimo 1 s por tramo."
+              : "La salida no puede quedar antes de la entrada. Mínimo 1 s por tramo."
+            : snap
+              ? "Imán activo: se ajusta a la aguja, los cortes y las marcas. Alt lo desactiva al arrastrar."
+              : "Imán desactivado: los tiradores se ajustan a segundos enteros."}
+        </p>
+
+        <p className="tl-shortcuts hint">
+          <span>
+            <kbd>Espacio</kbd> reproducir
+          </span>
+          <span>
+            <kbd>←</kbd>
+            <kbd>→</kbd> ±1 s
+          </span>
+          <span>
+            <kbd>Mayús</kbd> + flechas ±10 s
+          </span>
+          <span>
+            <kbd>I</kbd>
+            <kbd>O</kbd> marcar
+          </span>
+          <span>
+            <kbd>S</kbd> imán
+          </span>
+          <span>
+            <kbd>M</kbd> silencio
+          </span>
+        </p>
       </div>
 
       {clips.length > 0 && (
@@ -529,15 +1100,25 @@ export function TimelineEditor({
           disabled={clips.length === 0}
         >
           <Icon name="download" size={14} />
-          Añadir {clips.length || ""} {clips.length === 1 ? "tramo" : "tramos"} a la cola
+          {clips.length === 0
+            ? "Añadir tramos a la cola"
+            : `Añadir ${clips.length} ${
+                clips.length === 1 ? "tramo" : "tramos"
+              } a la cola`}
         </button>
 
         <span className="hint tl-format">Se guardan como {formatLabel}.</span>
       </div>
 
+      {preview.local && ready && (
+        <p className="hint tl-cache-note">
+          La copia local es solo para el editor; el corte final se descarga en {formatLabel}.
+        </p>
+      )}
+
       {clips.length === 0 && (
         <p className="hint tl-hint">
-          Arrastra los tiradores y pulsa «Añadir tramo». Puedes preparar varios antes de
+          Arrastra los tiradores o usa I/O para marcar. Puedes preparar varios antes de
           pasarlos a la cola.
         </p>
       )}

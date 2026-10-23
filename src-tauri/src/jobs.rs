@@ -43,12 +43,12 @@ fn hide_console_std(cmd: &mut std::process::Command) {
     }
 }
 
-fn hide_console_tokio(cmd: &mut tokio::process::Command) {
+pub(crate) fn hide_console_tokio(cmd: &mut tokio::process::Command) {
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
 }
 
-fn taskkill(pid: u32) {
+pub(crate) fn taskkill(pid: u32) {
     let mut cmd = std::process::Command::new("taskkill");
     cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
     hide_console_std(&mut cmd);
@@ -66,7 +66,7 @@ pub fn kill_all(state: &AppState) {
     }
 }
 
-fn cookie_args(mode: &str, path: Option<&str>) -> Result<Vec<String>, String> {
+pub(crate) fn cookie_args(mode: &str, path: Option<&str>) -> Result<Vec<String>, String> {
     match mode {
         "" | "none" => Ok(Vec::new()),
         "firefox" => Ok(vec![

@@ -1,7 +1,7 @@
 import type { Job, JobPlanPayload } from "../types";
 
 /** Presets que descargan vídeo y audio por separado y luego los unen. */
-const MERGED_PRESETS = new Set(["best", "1080", "720", "480"]);
+const MERGED_PRESETS = new Set(["best", "2160", "1440", "1080", "720", "480", "360"]);
 
 export function expectedFiles(preset: string): number {
   return MERGED_PRESETS.has(preset) ? 2 : 1;

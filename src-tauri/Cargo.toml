@@ -1,6 +1,6 @@
 [package]
 name = "clipfetch"
-version = "0.3.0"
+version = "1.0.0"
 description = "A simple desktop video downloader powered by yt-dlp"
 authors = ["ClipFetch contributors"]
 edition = "2024"
@@ -14,7 +14,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

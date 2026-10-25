@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import "@fontsource-variable/bricolage-grotesque";
@@ -13,6 +13,8 @@ import type {
   EngineUpdate,
   Job,
   JobPlanPayload,
+  PreviewFile,
+  PreviewProgress,
   PreviewState,
   PreviewStream,
   Settings,
@@ -23,7 +25,10 @@ import type {
 import {
   AUDIO_PRESETS,
   VIDEO_PRESETS,
+  bestVideoPreset,
+  formatBytes,
   formatClock,
+  formatSpeed,
   safeMessage,
   thumbnailOf,
 } from "./lib/format";
@@ -71,6 +76,30 @@ interface JobLogPayload {
   line: string;
 }
 
+function describePreviewProgress(
+  payload: PreviewProgress,
+  percent: number | null,
+): string {
+  const parts: string[] = [];
+  if (percent !== null && Number.isFinite(percent)) {
+    parts.push(`${Math.round(percent)} %`);
+  }
+  if (payload.downloaded && payload.downloaded > 0) {
+    parts.push(
+      payload.total && payload.total > 0
+        ? `${formatBytes(payload.downloaded)} / ${formatBytes(payload.total)}`
+        : formatBytes(payload.downloaded),
+    );
+  }
+  if (payload.speed && payload.speed > 0) {
+    parts.push(formatSpeed(payload.speed));
+  }
+  if (payload.stage === "processing") {
+    parts.push("procesando");
+  }
+  return parts.join(" · ");
+}
+
 function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [engine, setEngine] = useState<EngineStatus | null>(null);
@@ -100,6 +129,8 @@ function App() {
 
   const startingRef = useRef<Set<string>>(new Set());
   const previewTicketRef = useRef(0);
+  const previewRequestRef = useRef("");
+  const settingsRef = useRef<Settings | null>(null);
   const logBufferRef = useRef<LogBuffer | null>(null);
 
   if (logBufferRef.current === null) {
@@ -158,6 +189,10 @@ function App() {
       cancelled = true;
     };
   }, [engine?.installed, engine?.ytdlpVersion]);
+
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
 
   useEffect(() => {
     if (settings) void saveSettings(settings);
@@ -295,6 +330,30 @@ function App() {
           buffer?.push(jobId, line);
         }),
       );
+
+      unlisteners.push(
+        await listen<PreviewProgress>("preview://progress", (event) => {
+          const payload = event.payload;
+          if (payload.requestId !== previewRequestRef.current) return;
+
+          setPreview((previous) => {
+            if (previous.status !== "loading" || previous.local === false) {
+              return previous;
+            }
+            const percent =
+              payload.percent === null
+                ? previous.progress ?? 0
+                : Math.max(previous.progress ?? 0, payload.percent);
+            const detail = describePreviewProgress(payload, percent);
+            return {
+              ...previous,
+              local: true,
+              progress: percent,
+              detail: detail || previous.detail,
+            };
+          });
+        }),
+      );
     };
 
     void (async () => {
@@ -406,11 +465,20 @@ function App() {
     }
   };
 
-  const loadPreview = useCallback(
-    async (targetUrl: string, conf: Settings, kind: ToolKind) => {
-      const ticket = previewTicketRef.current + 1;
-      previewTicketRef.current = ticket;
-      setPreview({ status: "loading" });
+  const fetchRemotePreview = useCallback(
+    async (
+      targetUrl: string,
+      conf: Settings,
+      kind: ToolKind,
+      ticket: number,
+      localError?: string,
+    ) => {
+      setPreview({
+        status: "loading",
+        local: false,
+        progress: null,
+        detail: "Conectando con el stream del sitio…",
+      });
 
       try {
         const stream = await invoke<PreviewStream>("preview_stream", {
@@ -420,14 +488,83 @@ function App() {
           cookiesPath: conf.cookiesPath || null,
         });
         if (previewTicketRef.current !== ticket) return;
-        setPreview({ status: "ready", url: stream.url });
+        setPreview({ status: "ready", url: stream.url, local: false, progress: 100 });
       } catch (error) {
         if (previewTicketRef.current !== ticket) return;
-        setPreview({ status: "error", message: safeMessage(error) });
+        const remoteError = safeMessage(error);
+        setPreview({
+          status: "error",
+          local: false,
+          message: localError
+            ? `No se pudo preparar la copia local (${localError}). Tampoco el stream remoto: ${remoteError}`
+            : remoteError,
+        });
       }
     },
     [],
   );
+
+  const preparePreview = useCallback(
+    async (
+      targetUrl: string,
+      conf: Settings,
+      kind: ToolKind,
+      duration: number | null,
+      force = false,
+    ) => {
+      const ticket = previewTicketRef.current + 1;
+      previewTicketRef.current = ticket;
+      const requestId = crypto.randomUUID();
+      previewRequestRef.current = requestId;
+      setPreview({
+        status: "loading",
+        local: true,
+        progress: 0,
+        detail: "Preparando copia local…",
+      });
+
+      try {
+        const file = await invoke<PreviewFile>("prepare_preview", {
+          url: targetUrl,
+          mode: kind === "audio" ? "audio" : "video",
+          cookiesMode: conf.cookiesMode,
+          cookiesPath: conf.cookiesPath || null,
+          rateLimit: conf.rateLimit || null,
+          duration:
+            duration === null || !Number.isFinite(duration)
+              ? null
+              : Math.max(0, Math.floor(duration)),
+          requestId,
+          force,
+        });
+        if (previewTicketRef.current !== ticket) return;
+        previewRequestRef.current = "";
+        setPreview({
+          status: "ready",
+          url: convertFileSrc(file.path),
+          local: true,
+          progress: 100,
+        });
+      } catch (error) {
+        if (previewTicketRef.current !== ticket) return;
+        previewRequestRef.current = "";
+        await fetchRemotePreview(targetUrl, conf, kind, ticket, safeMessage(error));
+      }
+    },
+    [fetchRemotePreview],
+  );
+
+  const cancelPreview = useCallback((clear = true) => {
+    const requestId = previewRequestRef.current;
+    previewRequestRef.current = "";
+    previewTicketRef.current += 1;
+    if (requestId) {
+      void invoke("cancel_preview", { requestId }).catch(() => {
+        // La cancelación es best-effort: si el proceso ya terminó, no hay nada que hacer.
+      });
+    }
+    if (clear) setPreview({ status: "idle" });
+  }, []);
 
   const analyze = async () => {
     if (!settings || !url.trim()) return;
@@ -436,8 +573,7 @@ function App() {
     setAnalysisError("");
     setInfo(null);
     setSelection(new Set());
-    setPreview({ status: "idle" });
-    previewTicketRef.current += 1;
+    cancelPreview(true);
     try {
       const result = await invoke<YtDlpInfo>("analyze_url", {
         url: url.trim(),
@@ -449,9 +585,10 @@ function App() {
       if (playlist) {
         setMode("simple");
         setSelection(new Set(entryPositions(result.entries ?? [])));
+        updateSettings({ preset: "1080" });
       } else {
         setSelection(new Set());
-        void loadPreview(result.webpage_url || url.trim(), settings, tool);
+        updateSettings({ preset: bestVideoPreset(result) });
       }
     } catch (error) {
       setAnalysisError(safeMessage(error));
@@ -464,9 +601,6 @@ function App() {
   const changeTool = (next: ToolKind) => {
     if (next === tool) return;
     setTool(next);
-    if (info && info._type !== "playlist" && settings) {
-      void loadPreview(info.webpage_url || url.trim(), settings, next);
-    }
   };
 
   const positions = useMemo(() => entryPositions(info?.entries ?? []), [info]);
@@ -501,7 +635,7 @@ function App() {
       ? settings.preset
       : settings.audioPreset
     : tool === "video"
-      ? "best"
+      ? "1080"
       : "mp3-320";
 
   const changePreset = (value: string) => {
@@ -811,8 +945,41 @@ function App() {
 
   const previewRetry = () => {
     if (!info || !settings) return;
-    void loadPreview(info.webpage_url || url.trim(), settings, tool);
+    cancelPreview(false);
+    void preparePreview(
+      info.webpage_url || url.trim(),
+      settings,
+      tool,
+      info.duration ?? null,
+      true,
+    );
   };
+
+  useEffect(() => {
+    if (!info || mode !== "advanced" || !canAdvanced) {
+      if (previewRequestRef.current) cancelPreview(true);
+      return;
+    }
+
+    const conf = settingsRef.current;
+    if (!conf) return;
+    const targetUrl = info.webpage_url || url.trim();
+    if (!targetUrl) return;
+
+    let disposed = false;
+    const timer = window.setTimeout(() => {
+      if (disposed) return;
+      void preparePreview(targetUrl, conf, tool, info.duration ?? null);
+    }, 60);
+
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+      cancelPreview(true);
+    };
+    // La calidad o la carpeta no deben reiniciar la copia local; solo el vídeo o la herramienta.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, info, tool, canAdvanced, preparePreview, cancelPreview]);
 
   if (!settings || !engine) {
     return <BootScreen error={bootError} onRetry={loadApp} />;
@@ -883,6 +1050,7 @@ function App() {
               onClearAnalysisError={() => setAnalysisError("")}
               preview={preview}
               onRetryPreview={previewRetry}
+              onCancelPreview={() => cancelPreview(true)}
               preset={preset}
               presetOptions={presets}
               onPresetChange={changePreset}

@@ -122,10 +122,33 @@ export interface PreviewStream {
   url: string;
 }
 
+/** Copia local preparada para el editor. */
+export interface PreviewFile {
+  path: string;
+  kind: "video" | "audio";
+  cached: boolean;
+}
+
+export interface PreviewProgress {
+  requestId: string;
+  stage: "preparing" | "downloading" | "processing" | "ready";
+  percent: number | null;
+  downloaded: number | null;
+  total: number | null;
+  speed: number | null;
+  eta: number | null;
+}
+
 export interface PreviewState {
   status: "idle" | "loading" | "ready" | "error";
   url?: string;
   message?: string;
+  /** 0–100 mientras se prepara la copia local. */
+  progress?: number | null;
+  /** Texto corto para la capa de carga. */
+  detail?: string;
+  /** true = archivo local; false = stream remoto de respaldo. */
+  local?: boolean;
 }
 
 export type JobStatus =

@@ -2,7 +2,8 @@ import { formatClock, formatDuration } from "./format";
 
 export interface RulerTick {
   time: number;
-  label: string;
+  label: string | null;
+  major: boolean;
 }
 
 export interface SnapCandidate {
@@ -26,37 +27,37 @@ export function formatRulerTime(seconds: number, total: number): string {
 }
 
 /**
- * Marcas mayores de la regla. Apunta a 4–6 etiquetas, incluye siempre el
- * final y evita que la última marca quede pegada a la anterior.
+ * Marcas de la regla para la ventana visible. Las marcas mayores llevan
+ * etiqueta y las menores rellenan la escala como en un editor de vídeo.
  */
-export function buildRulerTicks(total: number): RulerTick[] {
-  const safeTotal = Math.max(1, Math.floor(total));
-  const target = safeTotal / 5;
+export function buildRulerTicks(viewStart: number, viewEnd: number): RulerTick[] {
+  const start = Math.max(0, viewStart);
+  const end = Math.max(start, viewEnd);
+  const target = Math.max(0.5, end - start) / 5;
   const step =
     RULER_STEPS.find((value) => value >= target) ??
     RULER_STEPS[RULER_STEPS.length - 1] ??
     60;
-  const times: number[] = [];
+  const minorStep = step / 5;
+  const first = Math.ceil(start / minorStep - 1e-9) * minorStep;
+  const ticks: RulerTick[] = [];
+  const seen = new Set<string>();
 
-  for (let time = 0; time <= safeTotal; time += step) {
-    times.push(Math.round(time));
+  for (let time = first; time <= end + 1e-6; time += minorStep) {
+    if (time < start - 1e-6 || time > end + 1e-6) continue;
+    const rounded = Math.round(time * 1000) / 1000;
+    const key = rounded.toFixed(3);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const major = Math.abs(rounded / step - Math.round(rounded / step)) < 1e-6;
+    ticks.push({
+      time: rounded,
+      label: major ? formatRulerTime(rounded, end) : null,
+      major,
+    });
   }
 
-  if (times.length === 0) times.push(0);
-  const last = times[times.length - 1];
-  if (last !== safeTotal) {
-    if (times.length > 1 && safeTotal - last < step * 0.55) {
-      times[times.length - 1] = safeTotal;
-    } else {
-      times.push(safeTotal);
-    }
-  }
-
-  const unique = [...new Set(times)].filter((time) => time >= 0 && time <= safeTotal);
-  return unique.map((time) => ({
-    time,
-    label: formatRulerTime(time, safeTotal),
-  }));
+  return ticks;
 }
 
 /** Devuelve el candidato de imán más cercano dentro del umbral. */
@@ -82,18 +83,11 @@ export function findSnap(
 export function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName;
-  return (
-    tag === "INPUT" ||
-    tag === "TEXTAREA" ||
-    tag === "SELECT" ||
-    target.isContentEditable
-  );
-}
-
-/** Controles que ya tienen su propia activación con Espacio/flechas. */
-export function isInteractiveTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  return Boolean(
-    target.closest("button, a, summary, [role='slider'], [contenteditable='true']"),
-  );
+  if (tag === "INPUT") {
+    const type = (target as HTMLInputElement).type;
+    return !["range", "checkbox", "radio", "button", "submit", "reset"].includes(
+      type,
+    );
+  }
+  return tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
 }

@@ -47,7 +47,15 @@ Decisiones de la siguiente pasada del editor:
   bordes de tramos preparados y a las marcas de la regla.
 - La pista tiene regla con tiempos reales, límites `Entrada`/`Salida`, mínimo de
   1 s y aviso visual cuando se intenta cruzar.
-- Atajos: `Espacio`, flechas ±1 s, `Mayús` + flechas ±10 s, `I`/`O`, `S` y `M`.
+- **Zoombar tipo Kdenlive** sobre la pista: la ventana sobre la barra representa
+  la parte visible del vídeo. Arrastrarla recorre la línea de tiempo y arrastrar
+  sus bordes hace zoom; la regla recalcula sus marcas. `Ctrl`/`Alt` + rueda también
+  hace zoom y `Mayús` + rueda desplaza.
+- **Atajos globales en modo avanzado**: se capturan en cualquier parte (aunque haya
+  un botón enfocado), salvo al escribir en campos de texto, en selectores o en el
+  panel de ajustes. `Enter` sigue activando el control enfocado.
+- Atajos: `Espacio`, flechas ±1 s, `Mayús` + flechas ±10 s, `I`/`O`, `S`, `M`,
+  `+`/`−` para la escala y `0` para ver todo.
 - Se elimina «Mejor calidad»: al cargar cada vídeo se preselecciona su resolución
   máxima real (hasta 2160p) y se puede cambiar a mano. En playlists se usa 1080p
   como base.

@@ -27,7 +27,7 @@ SHA-256 del instalador 0.3.0:
 
 - **Barra de herramientas**: modo Vídeo y modo Audio, cada uno con su propio flujo.
 - **Bandeja de preparación**: todo lo que añades se acumula en la barra izquierda; se puede reordenar, quitar y **exportar de una vez**.
-- **Modo avanzado**: copia local de baja resolución (hasta 480p) con audio para editar con fluidez, imán de ajuste, regla descriptiva, atajos de teclado, control de volumen, loop, varios tramos y salida a la cola.
+- **Modo avanzado**: copia local de baja resolución (hasta 480p) con audio para editar con fluidez, imán de ajuste, regla descriptiva, zoombar tipo Kdenlive (arrastra la ventana para recorrer y sus bordes para hacer zoom), atajos globales, control de volumen, loop, varios tramos y salida a la cola.
 - **Vídeo**: MP4 de 360p a 2160p, con H.264/AAC preferente hasta 1080p. Al cargar un vídeo se preselecciona su máxima resolución disponible; la calidad se puede cambiar a mano.
 - **Audio**: MP3 320/256/192/128, M4A 256/128, Opus 160, FLAC, WAV y audio original.
 - **Playlists y canales**: selector de vídeos con casillas y rangos.

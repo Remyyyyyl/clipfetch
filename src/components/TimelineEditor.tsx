@@ -14,7 +14,6 @@ import {
   clamp,
   findSnap,
   isEditableTarget,
-  isInteractiveTarget,
   type SnapCandidate,
 } from "../lib/timeline";
 import { Icon } from "./Icon";
@@ -35,11 +34,15 @@ interface TimelineEditorProps {
 const MIN_CLIP = 1;
 const SNAP_PX = 8;
 const SNAP_MAX_SECONDS = 2;
+const MIN_VIEW_SECONDS = 2;
+const ZOOM_EDGE_PX = 6;
 
 interface DragState {
   mode: "start" | "end" | "seek";
   rect: DOMRect;
   wasPlaying: boolean;
+  viewStart: number;
+  viewDuration: number;
 }
 
 interface BlockedState {
@@ -55,9 +58,19 @@ interface SnapState {
   label: SnapCandidate["label"];
 }
 
-function secondsAt(clientX: number, rect: DOMRect, total: number): number {
-  if (rect.width <= 0) return 0;
-  return clamp(((clientX - rect.left) / rect.width) * total, 0, total);
+function timeAt(
+  clientX: number,
+  rect: DOMRect,
+  viewStart: number,
+  viewDuration: number,
+): number {
+  if (rect.width <= 0 || viewDuration <= 0) return viewStart;
+  const ratio = (clientX - rect.left) / rect.width;
+  return clamp(
+    viewStart + ratio * viewDuration,
+    Math.max(0, viewStart),
+    viewStart + viewDuration,
+  );
 }
 
 function formatVolume(value: number): string {
@@ -92,6 +105,11 @@ export function TimelineEditor({
   const [seeking, setSeeking] = useState(false);
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
+  const [zoom, setZoom] = useState(0);
+  const [viewStart, setViewStart] = useState(0);
+  const [zoomHover, setZoomHover] = useState<"pan" | "start" | "end" | null>(
+    null,
+  );
 
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
@@ -102,12 +120,35 @@ export function TimelineEditor({
   const seekFrameRef = useRef<number | null>(null);
   const pendingSeekRef = useRef<number | null>(null);
   const previewOnlySeekRef = useRef(false);
+  const viewStartRef = useRef(0);
+  const viewDurationRef = useRef(total);
+  const zoomDragRef = useRef<{
+    mode: "pan" | "start" | "end";
+    startX: number;
+    startView: number;
+    startDuration: number;
+    startEnd: number;
+    rect: DOMRect;
+  } | null>(null);
+  const wheelHandlerRef = useRef<(event: WheelEvent) => void>(() => {});
+
+  const minViewDuration = Math.min(MIN_VIEW_SECONDS, total);
+  const viewDuration = total * Math.pow(minViewDuration / total, zoom);
+  const maxViewStart = Math.max(0, total - viewDuration);
+  const viewEnd = Math.min(total, viewStart + viewDuration);
+  const canZoom = total > minViewDuration + 0.001;
+
+  viewStartRef.current = viewStart;
+  viewDurationRef.current = viewDuration;
 
   const setMedia = (element: HTMLVideoElement | HTMLAudioElement | null) => {
     mediaRef.current = element;
   };
 
-  const rulerTicks = useMemo(() => buildRulerTicks(total), [total]);
+  const rulerTicks = useMemo(
+    () => buildRulerTicks(viewStart, viewEnd),
+    [viewStart, viewEnd],
+  );
 
   // Cambiar de vídeo reinicia el montaje. Cambiar de URL de preview no.
   useEffect(() => {
@@ -127,8 +168,14 @@ export function TimelineEditor({
     setBlocked(null);
     setHover(null);
     setDragging(null);
+    setZoom(0);
+    setViewStart(0);
     dragRef.current = null;
   }, [sourceKey, total]);
+
+  useEffect(() => {
+    setViewStart((previous) => clamp(previous, 0, maxViewStart));
+  }, [maxViewStart]);
 
   useEffect(() => {
     setPlaying(false);
@@ -170,11 +217,25 @@ export function TimelineEditor({
     setBlocked(null);
   }, []);
 
+  const ensureVisible = useCallback(
+    (time: number) => {
+      const start = viewStartRef.current;
+      const duration = viewDurationRef.current;
+      if (time >= start && time <= start + duration) return;
+      const limit = Math.max(0, total - duration);
+      setViewStart(clamp(time - duration / 2, 0, limit));
+    },
+    [total],
+  );
+
   const seek = useCallback(
     (seconds: number, movePlayhead = true) => {
       const target = clamp(seconds, 0, total);
       previewOnlySeekRef.current = !movePlayhead;
-      if (movePlayhead) setCurrent(target);
+      if (movePlayhead) {
+        setCurrent(target);
+        ensureVisible(target);
+      }
       pendingSeekRef.current = target;
       if (seekFrameRef.current !== null) return;
 
@@ -195,7 +256,7 @@ export function TimelineEditor({
         }
       });
     },
-    [total],
+    [total, ensureVisible],
   );
 
   const togglePlay = useCallback(() => {
@@ -209,6 +270,7 @@ export function TimelineEditor({
 
     const from = current < start || current >= end ? start : current;
     previewOnlySeekRef.current = false;
+    ensureVisible(from);
     if (Math.abs(media.currentTime - from) > 0.2) {
       try {
         media.currentTime = from;
@@ -224,11 +286,215 @@ export function TimelineEditor({
     } else {
       setPlaying(true);
     }
-  }, [preview.status, mediaFailed, current, start, end]);
+  }, [preview.status, mediaFailed, current, start, end, ensureVisible]);
 
   const focusAndToggle = () => {
     sectionRef.current?.focus({ preventScroll: true });
     togglePlay();
+  };
+
+  const zoomAnchor = () =>
+    current >= viewStart && current <= viewEnd
+      ? current
+      : viewStart + viewDuration / 2;
+
+  const zoomTo = (
+    nextZoom: number,
+    anchorTime = zoomAnchor(),
+    anchorRatio?: number,
+  ) => {
+    const next = clamp(nextZoom, 0, 1);
+    const nextDuration = total * Math.pow(minViewDuration / total, next);
+    const nextMaxStart = Math.max(0, total - nextDuration);
+    let ratio = anchorRatio;
+
+    if (ratio === undefined || !Number.isFinite(ratio) || ratio < 0 || ratio > 1) {
+      ratio = viewDuration > 0 ? (anchorTime - viewStart) / viewDuration : 0.5;
+    }
+    ratio = clamp(ratio, 0, 1);
+
+    setZoom(next);
+    setViewStart(clamp(anchorTime - nextDuration * ratio, 0, nextMaxStart));
+  };
+
+  const zoomFromDuration = (duration: number) => {
+    if (!canZoom) return 0;
+    const safe = clamp(duration, minViewDuration, total);
+    return clamp(
+      Math.log(safe / total) / Math.log(minViewDuration / total),
+      0,
+      1,
+    );
+  };
+
+  const zoomBy = (delta: number) => {
+    if (!canZoom) return;
+    zoomTo(zoom + delta, zoomAnchor());
+  };
+
+  const fitView = () => {
+    setZoom(0);
+    setViewStart(0);
+  };
+
+  wheelHandlerRef.current = (event: WheelEvent) => {
+    if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+      return;
+    }
+    const track = trackRef.current;
+    if (!track) return;
+    const rect = track.getBoundingClientRect();
+    if (rect.width <= 0) return;
+
+    event.preventDefault();
+
+    if (event.shiftKey) {
+      const direction = (event.deltaY || event.deltaX) > 0 ? 1 : -1;
+      setViewStart(
+        clamp(viewStart + direction * viewDuration * 0.18, 0, maxViewStart),
+      );
+      return;
+    }
+
+    const ratio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    const anchor = viewStart + ratio * viewDuration;
+    const delta = event.deltaY < 0 ? 0.08 : -0.08;
+    zoomTo(zoom + delta, anchor, ratio);
+  };
+
+  useEffect(() => {
+    const track = trackRef.current;
+    if (!track) return;
+    const handler = (event: WheelEvent) => wheelHandlerRef.current(event);
+    track.addEventListener("wheel", handler, { passive: false });
+    return () => track.removeEventListener("wheel", handler);
+  }, []);
+
+  const onZoomPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0) return;
+
+    const x = event.clientX - rect.left;
+    const windowEl = event.currentTarget.querySelector<HTMLElement>(
+      ".tl-zoombar-window",
+    );
+    const windowRect = windowEl?.getBoundingClientRect();
+    const left = windowRect
+      ? windowRect.left - rect.left
+      : (viewStart / total) * rect.width;
+    const right = windowRect
+      ? windowRect.right - rect.left
+      : ((viewStart + viewDuration) / total) * rect.width;
+    const startDistance = Math.abs(x - left);
+    const endDistance = Math.abs(x - right);
+    let mode: "pan" | "start" | "end";
+    let nextStart = viewStart;
+
+    if (Math.min(startDistance, endDistance) <= ZOOM_EDGE_PX) {
+      mode = startDistance <= endDistance ? "start" : "end";
+    } else if (x > left && x < right) {
+      mode = "pan";
+    } else {
+      const time = (x / rect.width) * total;
+      nextStart = clamp(time - viewDuration / 2, 0, maxViewStart);
+      setViewStart(nextStart);
+      mode = "pan";
+    }
+
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Puntero sintético o ya liberado.
+    }
+
+    zoomDragRef.current = {
+      mode,
+      startX: event.clientX,
+      startView: nextStart,
+      startDuration: viewDuration,
+      startEnd: viewEnd,
+      rect,
+    };
+    setZoomHover(mode);
+  };
+
+  const onZoomPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const drag = zoomDragRef.current;
+
+    if (!drag) {
+      const x = event.clientX - rect.left;
+      const windowEl = event.currentTarget.querySelector<HTMLElement>(
+        ".tl-zoombar-window",
+      );
+      const windowRect = windowEl?.getBoundingClientRect();
+      const left = windowRect
+        ? windowRect.left - rect.left
+        : (viewStart / total) * rect.width;
+      const right = windowRect
+        ? windowRect.right - rect.left
+        : ((viewStart + viewDuration) / total) * rect.width;
+      const startDistance = Math.abs(x - left);
+      const endDistance = Math.abs(x - right);
+
+      if (Math.min(startDistance, endDistance) <= ZOOM_EDGE_PX) {
+        setZoomHover(startDistance <= endDistance ? "start" : "end");
+      } else if (x > left && x < right) {
+        setZoomHover("pan");
+      } else {
+        setZoomHover(null);
+      }
+      return;
+    }
+
+    const deltaTime = ((event.clientX - drag.startX) / drag.rect.width) * total;
+
+    if (drag.mode === "pan") {
+      setViewStart(
+        clamp(drag.startView + deltaTime, 0, total - drag.startDuration),
+      );
+      return;
+    }
+
+    if (!canZoom) return;
+
+    if (drag.mode === "start") {
+      const nextStart = clamp(
+        drag.startView + deltaTime,
+        0,
+        drag.startEnd - minViewDuration,
+      );
+      const nextDuration = drag.startEnd - nextStart;
+      setViewStart(nextStart);
+      setZoom(zoomFromDuration(nextDuration));
+    } else {
+      const nextEnd = clamp(
+        drag.startEnd + deltaTime,
+        drag.startView + minViewDuration,
+        total,
+      );
+      const nextDuration = nextEnd - drag.startView;
+      setZoom(zoomFromDuration(nextDuration));
+      setViewStart(drag.startView);
+    }
+  };
+
+  const onZoomPointerUp = (event?: ReactPointerEvent<HTMLDivElement>) => {
+    if (event) {
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      } catch {
+        // La captura ya se liberó.
+      }
+    }
+    zoomDragRef.current = null;
+    setZoomHover(null);
+  };
+
+  const onZoomPointerLeave = () => {
+    if (!zoomDragRef.current) setZoomHover(null);
   };
 
   // La aguja se mueve con cada frame mientras hay reproducción.
@@ -265,6 +531,19 @@ export function TimelineEditor({
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
   }, [playing, end, start, loop]);
+
+  // Mientras se reproduce, la ventana sigue a la aguja para no perderla.
+  useEffect(() => {
+    if (!playing || viewDuration >= total - 0.001 || zoomDragRef.current) return;
+    const left = viewStart + viewDuration * 0.05;
+    const right = viewStart + viewDuration * 0.9;
+
+    if (current < left) {
+      setViewStart(clamp(current - viewDuration * 0.1, 0, maxViewStart));
+    } else if (current > right) {
+      setViewStart(clamp(current - viewDuration * 0.15, 0, maxViewStart));
+    }
+  }, [playing, current, viewStart, viewDuration, total, maxViewStart]);
 
   const markStart = useCallback(() => {
     const raw = Math.round(current);
@@ -308,11 +587,15 @@ export function TimelineEditor({
   const baseSnapCandidates = useMemo<SnapCandidate[]>(() => {
     const list: SnapCandidate[] = [];
     for (const clip of clips) {
-      list.push({ time: clip.start, label: "Corte" });
-      list.push({ time: clip.end, label: "Corte" });
+      if (clip.start >= viewStart && clip.start <= viewEnd) {
+        list.push({ time: clip.start, label: "Corte" });
+      }
+      if (clip.end >= viewStart && clip.end <= viewEnd) {
+        list.push({ time: clip.end, label: "Corte" });
+      }
     }
     for (const tick of rulerTicks) {
-      list.push({ time: tick.time, label: "Marca" });
+      if (tick.major) list.push({ time: tick.time, label: "Marca" });
     }
 
     const seen = new Set<number>();
@@ -321,7 +604,7 @@ export function TimelineEditor({
       seen.add(candidate.time);
       return true;
     });
-  }, [clips, rulerTicks]);
+  }, [clips, rulerTicks, viewStart, viewEnd]);
 
   const resolveTime = useCallback(
     (raw: number, rect: DOMRect, bypass: boolean, includePlayhead = true) => {
@@ -332,10 +615,15 @@ export function TimelineEditor({
 
       const threshold = Math.min(
         SNAP_MAX_SECONDS,
-        (SNAP_PX / Math.max(1, rect.width)) * total,
+        (SNAP_PX / Math.max(1, rect.width)) * viewDuration,
       );
       const playhead = Math.round(current);
-      if (includePlayhead && Math.abs(playhead - raw) <= threshold) {
+      if (
+        includePlayhead &&
+        playhead >= viewStart &&
+        playhead <= viewEnd &&
+        Math.abs(playhead - raw) <= threshold
+      ) {
         return {
           value: playhead,
           target: { time: playhead, label: "Aguja" as const },
@@ -350,7 +638,7 @@ export function TimelineEditor({
           }
         : { value: rounded, target: null as SnapState | null };
     },
-    [snap, total, current, baseSnapCandidates],
+    [snap, viewDuration, viewStart, viewEnd, current, baseSnapCandidates],
   );
 
   const beginDrag = (mode: "start" | "end" | "seek", rect: DOMRect) => {
@@ -358,7 +646,13 @@ export function TimelineEditor({
     const wasPlaying = media ? !media.paused && !media.ended : false;
     if (wasPlaying && media) media.pause();
     clearBlocked();
-    dragRef.current = { mode, rect, wasPlaying };
+    dragRef.current = {
+      mode,
+      rect,
+      wasPlaying,
+      viewStart,
+      viewDuration,
+    };
     setDragging(mode);
     setSnapTarget(null);
     setHover(null);
@@ -375,7 +669,7 @@ export function TimelineEditor({
     beginDrag("seek", rect);
     sectionRef.current?.focus({ preventScroll: true });
     const resolved = resolveTime(
-      secondsAt(event.clientX, rect, total),
+      timeAt(event.clientX, rect, viewStart, viewDuration),
       rect,
       event.altKey,
       false,
@@ -404,11 +698,18 @@ export function TimelineEditor({
     const drag = dragRef.current;
     if (!drag) {
       const rect = trackRef.current?.getBoundingClientRect();
-      if (rect) setHover({ time: secondsAt(event.clientX, rect, total) });
+      if (rect) {
+        setHover({ time: timeAt(event.clientX, rect, viewStart, viewDuration) });
+      }
       return;
     }
 
-    const raw = secondsAt(event.clientX, drag.rect, total);
+    const raw = timeAt(
+      event.clientX,
+      drag.rect,
+      drag.viewStart,
+      drag.viewDuration,
+    );
     const resolved = resolveTime(raw, drag.rect, event.altKey, drag.mode !== "seek");
     setSnapTarget(resolved.target);
 
@@ -529,8 +830,19 @@ export function TimelineEditor({
     total,
     markStart,
     markEnd,
+    zoomBy,
+    fitView,
   });
-  shortcutRef.current = { togglePlay, seek, current, total, markStart, markEnd };
+  shortcutRef.current = {
+    togglePlay,
+    seek,
+    current,
+    total,
+    markStart,
+    markEnd,
+    zoomBy,
+    fitView,
+  };
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -538,69 +850,87 @@ export function TimelineEditor({
         return;
       }
       if (isEditableTarget(event.target)) return;
-      if (isInteractiveTarget(event.target)) return;
+      if (document.querySelector(".drawer-layer")) return;
       if (event.repeat && event.key === " ") return;
 
+      const targetElement = event.target as HTMLElement | null;
+      const isTimelineHandle = Boolean(targetElement?.closest?.(".tl-handle"));
+      const isRangeInput =
+        targetElement instanceof HTMLInputElement && targetElement.type === "range";
+      const isNavigationKey =
+        event.key === "ArrowLeft" ||
+        event.key === "ArrowRight" ||
+        event.key === "ArrowUp" ||
+        event.key === "ArrowDown" ||
+        event.key === "Home" ||
+        event.key === "End";
+      if ((isTimelineHandle || isRangeInput) && isNavigationKey) {
+        return;
+      }
+
       const shortcuts = shortcutRef.current;
+      const handle = (action: () => void) => {
+        event.preventDefault();
+        event.stopPropagation();
+        action();
+      };
+
       switch (event.key) {
         case " ":
-          event.preventDefault();
-          shortcuts.togglePlay();
+          handle(shortcuts.togglePlay);
           break;
         case "ArrowLeft":
         case "ArrowRight": {
-          event.preventDefault();
-          const direction = event.key === "ArrowLeft" ? -1 : 1;
-          shortcuts.seek(
-            clamp(
-              shortcuts.current + direction * (event.shiftKey ? 10 : 1),
-              0,
-              shortcuts.total,
-            ),
-          );
+          handle(() => {
+            const direction = event.key === "ArrowLeft" ? -1 : 1;
+            shortcuts.seek(
+              clamp(
+                shortcuts.current + direction * (event.shiftKey ? 10 : 1),
+                0,
+                shortcuts.total,
+              ),
+            );
+          });
           break;
         }
         case "Home":
-          event.preventDefault();
-          shortcuts.seek(0);
+          handle(() => shortcuts.seek(0));
           break;
         case "End":
-          event.preventDefault();
-          shortcuts.seek(shortcuts.total);
+          handle(() => shortcuts.seek(shortcuts.total));
           break;
         default: {
           const key = event.key.toLowerCase();
-          if (key === "i") {
-            event.preventDefault();
-            shortcuts.markStart();
-          } else if (key === "o") {
-            event.preventDefault();
-            shortcuts.markEnd();
-          } else if (key === "s") {
-            event.preventDefault();
-            setSnap((value) => !value);
-          } else if (key === "m") {
-            event.preventDefault();
-            setMuted((value) => !value);
+          if (key === "i") handle(shortcuts.markStart);
+          else if (key === "o") handle(shortcuts.markEnd);
+          else if (key === "s") handle(() => setSnap((value) => !value));
+          else if (key === "m") handle(() => setMuted((value) => !value));
+          else if (key === "+" || key === "=") {
+            handle(() => shortcuts.zoomBy(0.12));
+          } else if (key === "-" || key === "_") {
+            handle(() => shortcuts.zoomBy(-0.12));
+          } else if (key === "0") {
+            handle(shortcuts.fitView);
           }
         }
       }
     };
 
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
 
   const ready = preview.status === "ready" && Boolean(preview.url) && !mediaFailed;
   const preparing = preview.status === "loading" && preview.local !== false;
-  const startPercent = (start / total) * 100;
-  const endPercent = (end / total) * 100;
-  const playheadPercent = (clamp(current, 0, total) / total) * 100;
+  const viewPercent = (time: number) => ((time - viewStart) / viewDuration) * 100;
+  const startPercent = viewPercent(start);
+  const endPercent = viewPercent(end);
+  const playheadPercent = viewPercent(clamp(current, 0, total));
   const clipLength = end - start;
   const isAudio = kind === "audio";
   const progress = preview.progress ?? 0;
-  const snapPercent = snapTarget ? (snapTarget.time / total) * 100 : null;
-  const hoverPercent = hover ? (hover.time / total) * 100 : null;
+  const snapPercent = snapTarget ? viewPercent(snapTarget.time) : null;
+  const hoverPercent = hover ? viewPercent(hover.time) : null;
 
   const mediaEvents = {
     onPlay: () => {
@@ -896,6 +1226,70 @@ export function TimelineEditor({
       </div>
 
       <div
+        className="tl-scale"
+        title="Arrastra la ventana para recorrer; arrastra sus bordes para hacer zoom. Ctrl o Alt + rueda para zoom."
+      >
+        <span className="tl-scale-label">Escala</span>
+        <button
+          type="button"
+          className="tl-scale-step"
+          onClick={() => zoomBy(-0.12)}
+          disabled={!canZoom || zoom <= 0}
+          aria-label="Alejar la línea de tiempo"
+        >
+          −
+        </button>
+        <div
+          className={`tl-zoombar${zoomHover ? ` is-${zoomHover}` : ""}`}
+          onPointerDown={onZoomPointerDown}
+          onPointerMove={onZoomPointerMove}
+          onPointerUp={onZoomPointerUp}
+          onPointerCancel={() => onZoomPointerUp()}
+          onPointerLeave={onZoomPointerLeave}
+          role="presentation"
+        >
+          <span
+            className="tl-zoombar-selection"
+            style={{
+              left: `${(start / total) * 100}%`,
+              width: `${((end - start) / total) * 100}%`,
+            }}
+          />
+          <span
+            className="tl-zoombar-window"
+            style={{
+              left: `${(viewStart / total) * 100}%`,
+              width: `${(viewDuration / total) * 100}%`,
+            }}
+          >
+            <span className="tl-zoombar-edge is-start" />
+            <span className="tl-zoombar-edge is-end" />
+          </span>
+          <span
+            className="tl-zoombar-playhead"
+            style={{ left: `${(current / total) * 100}%` }}
+          />
+        </div>
+        <button
+          type="button"
+          className="tl-scale-step"
+          onClick={() => zoomBy(0.12)}
+          disabled={!canZoom || zoom >= 1}
+          aria-label="Acercar la línea de tiempo"
+        >
+          +
+        </button>
+        <button
+          type="button"
+          className="button tiny tl-scale-fit"
+          onClick={fitView}
+          disabled={zoom <= 0}
+        >
+          Todo
+        </button>
+      </div>
+
+      <div
         ref={trackRef}
         className={`tl-track${dragging ? " is-dragging" : ""}${snapTarget ? " has-snap" : ""}`}
         onPointerDown={onTrackPointerDown}
@@ -905,22 +1299,28 @@ export function TimelineEditor({
         onPointerLeave={onTrackPointerLeave}
         role="presentation"
       >
-        <div className="tl-ruler" aria-hidden="true">
-          {rulerTicks.map((tick, index) => (
-            <span
-              key={tick.time}
-              className="tl-tick"
-              style={{ left: `${(tick.time / total) * 100}%` }}
-            >
+        <div className="tl-track-view">
+          <div className="tl-ruler" aria-hidden="true">
+          {rulerTicks.map((tick) => {
+            const percent = viewPercent(tick.time);
+            return (
               <span
-                className={`tl-tick-label${index === 0 ? " is-first" : ""}${
-                  index === rulerTicks.length - 1 ? " is-last" : ""
-                }`}
+                key={tick.time}
+                className={`tl-tick${tick.major ? " is-major" : " is-minor"}`}
+                style={{ left: `${percent}%` }}
               >
-                {tick.label}
+                {tick.major && tick.label && (
+                  <span
+                    className={`tl-tick-label${percent < 8 ? " is-first" : ""}${
+                      percent > 92 ? " is-last" : ""
+                    }`}
+                  >
+                    {tick.label}
+                  </span>
+                )}
               </span>
-            </span>
-          ))}
+            );
+          })}
         </div>
 
         {clips.map((clip) => (
@@ -928,8 +1328,8 @@ export function TimelineEditor({
             key={clip.id}
             className="tl-clip-block"
             style={{
-              left: `${(clip.start / total) * 100}%`,
-              width: `${((clip.end - clip.start) / total) * 100}%`,
+              left: `${viewPercent(clip.start)}%`,
+              width: `${viewPercent(clip.end) - viewPercent(clip.start)}%`,
             }}
           />
         ))}
@@ -959,51 +1359,58 @@ export function TimelineEditor({
           </span>
         )}
 
-        <span className="tl-playhead" style={{ left: `${playheadPercent}%` }} />
+          {clipLength <= MIN_CLIP && (
+            <span
+              className="tl-min-gap"
+              style={{ left: `${(startPercent + endPercent) / 2}%` }}
+            >
+              mín. 1 s
+            </span>
+          )}
+        </div>
 
-        {clipLength <= MIN_CLIP && (
-          <span
-            className="tl-min-gap"
-            style={{ left: `${(startPercent + endPercent) / 2}%` }}
-          >
-            mín. 1 s
-          </span>
+        {current >= viewStart && current <= viewEnd && (
+          <span className="tl-playhead" style={{ left: `${playheadPercent}%` }} />
         )}
 
-        <button
-          type="button"
-          className={`tl-handle is-start${dragging === "start" ? " is-active" : ""}${
-            blocked?.side === "start" ? " is-blocked" : ""
-          }`}
-          style={{ left: `${startPercent}%` }}
-          role="slider"
-          aria-label="Entrada del tramo"
-          aria-orientation="horizontal"
-          aria-valuemin={0}
-          aria-valuemax={Math.max(0, end - MIN_CLIP)}
-          aria-valuenow={start}
-          aria-valuetext={formatClock(start)}
-          aria-describedby="tl-limit-status"
-          onPointerDown={onHandlePointerDown("start")}
-          onKeyDown={onHandleKey("start")}
-        />
-        <button
-          type="button"
-          className={`tl-handle is-end${dragging === "end" ? " is-active" : ""}${
-            blocked?.side === "end" ? " is-blocked" : ""
-          }`}
-          style={{ left: `${endPercent}%` }}
-          role="slider"
-          aria-label="Salida del tramo"
-          aria-orientation="horizontal"
-          aria-valuemin={Math.min(total, start + MIN_CLIP)}
-          aria-valuemax={total}
-          aria-valuenow={end}
-          aria-valuetext={formatClock(end)}
-          aria-describedby="tl-limit-status"
-          onPointerDown={onHandlePointerDown("end")}
-          onKeyDown={onHandleKey("end")}
-        />
+        {start >= viewStart && start <= viewEnd && (
+          <button
+            type="button"
+            className={`tl-handle is-start${dragging === "start" ? " is-active" : ""}${
+              blocked?.side === "start" ? " is-blocked" : ""
+            }`}
+            style={{ left: `${startPercent}%` }}
+            role="slider"
+            aria-label="Entrada del tramo"
+            aria-orientation="horizontal"
+            aria-valuemin={0}
+            aria-valuemax={Math.max(0, end - MIN_CLIP)}
+            aria-valuenow={start}
+            aria-valuetext={formatClock(start)}
+            aria-describedby="tl-limit-status"
+            onPointerDown={onHandlePointerDown("start")}
+            onKeyDown={onHandleKey("start")}
+          />
+        )}
+        {end >= viewStart && end <= viewEnd && (
+          <button
+            type="button"
+            className={`tl-handle is-end${dragging === "end" ? " is-active" : ""}${
+              blocked?.side === "end" ? " is-blocked" : ""
+            }`}
+            style={{ left: `${endPercent}%` }}
+            role="slider"
+            aria-label="Salida del tramo"
+            aria-orientation="horizontal"
+            aria-valuemin={Math.min(total, start + MIN_CLIP)}
+            aria-valuemax={total}
+            aria-valuenow={end}
+            aria-valuetext={formatClock(end)}
+            aria-describedby="tl-limit-status"
+            onPointerDown={onHandlePointerDown("end")}
+            onKeyDown={onHandleKey("end")}
+          />
+        )}
       </div>
 
       <div className="tl-foot">
@@ -1042,6 +1449,13 @@ export function TimelineEditor({
           </span>
           <span>
             <kbd>M</kbd> silencio
+          </span>
+          <span>
+            <kbd>+</kbd>
+            <kbd>−</kbd> escala
+          </span>
+          <span>
+            <kbd>0</kbd> ver todo
           </span>
         </p>
       </div>

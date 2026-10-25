@@ -4,7 +4,7 @@ Interfaz de escritorio sencilla para [yt-dlp](https://github.com/yt-dlp/yt-dlp) 
 
 ## Descargar e instalar
 
-1. Entra en [Releases](https://github.com/Remyyyyyl/clipfetch/releases/latest) y descarga `ClipFetch_0.3.0_x64-setup.exe`.
+1. Entra en [Releases](https://github.com/Remyyyyyl/clipfetch/releases/latest) y descarga `ClipFetch_1.0.0_x64-setup.exe`.
 2. Ejecuta el instalador. Se instala por usuario y no pide permisos de administrador.
 3. Abre ClipFetch y pulsa **Instalar motor**. La app descarga yt-dlp, FFmpeg y Deno (~250 MB de descarga; ~450 MB en disco).
 4. Pega una URL, elige la calidad y la carpeta, y pulsa **Descargar**.
@@ -15,13 +15,13 @@ Interfaz de escritorio sencilla para [yt-dlp](https://github.com/yt-dlp/yt-dlp) 
 
 **Desinstalar:** Configuración → Aplicaciones → ClipFetch. Los archivos descargados se conservan.
 
-SHA-256 del instalador 0.3.0:
+SHA-256 del instalador 1.0.0:
 
 ```text
-32194f8b2641fe3ee08790820d0c4775bf47f7fa78016b521c01da4946040c54
+8e4135cdf1f816c0a69090176a39ee66e97a83cf7cf53bdfcbb6e786e97d643c
 ```
 
-> Estado: interfaz de mesa de corte con herramientas de vídeo y audio, bandeja de preparación y editor de tramos. Siguiente fase: firma de código, verificación de checksums y actualizador.
+> Estado: versión 1.0 con mesa de corte, copia local para el editor, zoombar tipo Kdenlive y calidad máxima automática. Siguiente fase: firma de código, verificación de checksums y actualizador.
 
 ## Funciones
 

@@ -32,9 +32,9 @@ Pendiente tras la publicación:
 Hecho para la 0.3.0: README, hoja de ruta y versión actualizados; instalador
 publicado en la release `v0.3.0`.
 
-## 0.4 · Editor local
+## 1.0 · Editor local
 
-Decisiones de la siguiente pasada del editor:
+Decisiones de la versión 1.0:
 
 - La vista previa del modo avanzado usa una **copia local de baja resolución
   (hasta 480p) con audio** (`preview_stream` queda como respaldo remoto). Solo
@@ -56,6 +56,9 @@ Decisiones de la siguiente pasada del editor:
   panel de ajustes. `Enter` sigue activando el control enfocado.
 - Atajos: `Espacio`, flechas ±1 s, `Mayús` + flechas ±10 s, `I`/`O`, `S`, `M`,
   `+`/`−` para la escala y `0` para ver todo.
+
+Publicada como `v1.0.0` con el instalador `ClipFetch_1.0.0_x64-setup.exe`.
+SHA-256: `8e4135cdf1f816c0a69090176a39ee66e97a83cf7cf53bdfcbb6e786e97d643c`.
 - Se elimina «Mejor calidad»: al cargar cada vídeo se preselecciona su resolución
   máxima real (hasta 2160p) y se puede cambiar a mano. En playlists se usa 1080p
   como base.

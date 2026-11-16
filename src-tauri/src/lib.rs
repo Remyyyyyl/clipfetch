@@ -1,5 +1,6 @@
 mod engine;
 mod jobs;
+mod local;
 mod preview;
 mod store;
 
@@ -52,6 +53,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(jobs::AppState::default())
         .manage(preview::PreviewState::default())
+        .manage(local::LocalPreviewState::default())
         .invoke_handler(tauri::generate_handler![
             engine::engine_status,
             engine::install_engine,
@@ -63,6 +65,10 @@ pub fn run() {
             jobs::preview_stream,
             preview::prepare_preview,
             preview::cancel_preview,
+            local::inspect_local,
+            local::prepare_local_preview,
+            local::cancel_local_preview,
+            local::start_local_cut,
             store::load_state,
             store::save_state,
             default_download_dir,
@@ -78,6 +84,9 @@ pub fn run() {
                 }
                 if let Some(state) = app_handle.try_state::<preview::PreviewState>() {
                     preview::kill_all(state.inner());
+                }
+                if let Some(state) = app_handle.try_state::<local::LocalPreviewState>() {
+                    local::kill_all(state.inner());
                 }
             }
         });

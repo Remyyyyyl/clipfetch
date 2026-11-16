@@ -144,7 +144,7 @@ fn preset_args(preset: &str) -> Result<Vec<String>, String> {
     Ok(args)
 }
 
-fn format_clock(seconds: u32) -> String {
+pub(crate) fn format_clock(seconds: u32) -> String {
     format!(
         "{:02}:{:02}:{:02}",
         seconds / 3600,
@@ -154,7 +154,7 @@ fn format_clock(seconds: u32) -> String {
 }
 
 /// Prefijo del archivo: `00-01-30_00-02-45`.
-fn clip_label(start: u32, end: u32) -> String {
+pub(crate) fn clip_label(start: u32, end: u32) -> String {
     let start = format_clock(start).replace(':', "-");
     let end = format_clock(end).replace(':', "-");
     format!("{start}_{end}")

@@ -28,6 +28,13 @@ const STATUS_LABELS: Record<JobStatus, string> = {
 };
 
 function stagedMeta(item: StagedItem): string {
+  if (item.source === "file") {
+    const clip = item.clip
+      ? `${formatClock(item.clip.start)}–${formatClock(item.clip.end)}`
+      : "Archivo completo";
+    const resolution = item.resolution ? ` · ${item.resolution}` : "";
+    return `${clip} · Archivo local${resolution}`;
+  }
   const format = presetLabel(item.preset);
   if (item.isPlaylist) {
     return `Playlist · ${item.totalItems} ${item.totalItems === 1 ? "vídeo" : "vídeos"}`;
@@ -190,7 +197,9 @@ export function QueueRail({
                       <span className={`status-dot ${job.status}`} aria-hidden="true" />
                       {job.skipped && job.status === "completed"
                         ? "Ya existía"
-                        : STATUS_LABELS[job.status]}
+                        : job.request.source === "file" && job.status === "downloading"
+                          ? "Cortando"
+                          : STATUS_LABELS[job.status]}
                     </div>
 
                     <div className="rail-tape" aria-hidden="true">

@@ -26,6 +26,7 @@ interface TimelineEditorProps {
   duration: number;
   preview: PreviewState;
   formatLabel: string;
+  localFile?: boolean;
   onRetryPreview: () => void;
   onCancelPreview: () => void;
   onAddClips: (ranges: Array<{ start: number; end: number }>) => void;
@@ -85,6 +86,7 @@ export function TimelineEditor({
   duration,
   preview,
   formatLabel,
+  localFile,
   onRetryPreview,
   onCancelPreview,
   onAddClips,
@@ -1044,7 +1046,11 @@ export function TimelineEditor({
               {preview.status === "loading" ? (
                 <>
                   <p className="tl-overlay-title">
-                    {preparing ? "Preparando la copia local" : "Conectando con el vídeo"}
+                    {localFile
+                      ? "Preparando el archivo"
+                      : preparing
+                        ? "Preparando la copia local"
+                        : "Conectando con el vídeo"}
                   </p>
                   {preparing && (
                     <div
@@ -1060,7 +1066,9 @@ export function TimelineEditor({
                   <p>
                     {preview.detail ||
                       (preparing
-                        ? "Descargando una copia de baja resolución para editar con fluidez."
+                        ? localFile
+                          ? "Si el formato no se reproduce directamente, se prepara una copia compatible."
+                          : "Descargando una copia de baja resolución para editar con fluidez."
                         : "Buscando el stream del sitio…")}
                   </p>
                   {preparing && (
@@ -1080,11 +1088,13 @@ export function TimelineEditor({
                 <>
                   <p>
                     {mediaFailed
-                      ? "El navegador no pudo reproducir esta vista previa. Los tramos se pueden marcar igual."
+                      ? localFile
+                        ? "El navegador no pudo reproducir este archivo. Puedes marcar tramos igualmente o preparar una copia compatible (puede tardar)."
+                        : "El navegador no pudo reproducir esta vista previa. Los tramos se pueden marcar igual."
                       : preview.message || "No se pudo cargar la vista previa."}
                   </p>
                   <button type="button" className="button tiny" onClick={onRetryPreview}>
-                    Reintentar
+                    {localFile && mediaFailed ? "Preparar copia compatible" : "Reintentar"}
                   </button>
                 </>
               )}
@@ -1096,18 +1106,22 @@ export function TimelineEditor({
           <span
             className={`tl-badge mono${preview.local ? " is-local" : ""}`}
             title={
-              preview.local
-                ? "Copia local de baja resolución para editar. El corte final se descarga en la calidad elegida."
-                : "La copia local no está disponible; se usa el stream del sitio."
+              localFile
+                ? "Se reproduce el archivo del disco. El corte final se guarda sin recodificar."
+                : preview.local
+                  ? "Copia local de baja resolución para editar. El corte final se descarga en la calidad elegida."
+                  : "La copia local no está disponible; se usa el stream del sitio."
             }
           >
             {isAudio
-              ? preview.local
+              ? localFile || preview.local
                 ? "Audio local"
                 : "Audio remoto"
-              : preview.local
-                ? "Copia local"
-                : "Stream remoto"}
+              : localFile
+                ? "Archivo local"
+                : preview.local
+                  ? "Copia local"
+                  : "Stream remoto"}
           </span>
         )}
         {dragging && dragging !== "seek" ? (
@@ -1521,12 +1535,16 @@ export function TimelineEditor({
               } a la cola`}
         </button>
 
-        <span className="hint tl-format">Se guardan como {formatLabel}.</span>
+        <span className="hint tl-format">
+          {localFile ? "Se guardan en copia rápida." : `Se guardan como ${formatLabel}.`}
+        </span>
       </div>
 
       {preview.local && ready && (
         <p className="hint tl-cache-note">
-          La copia local es solo para el editor; el corte final se descarga en {formatLabel}.
+          {localFile
+            ? "El vídeo se copia sin recodificar (el audio puede convertirse a AAC). El clip se guarda en la carpeta de salida."
+            : `La copia local es solo para el editor; el corte final se descarga en ${formatLabel}.`}
         </p>
       )}
 

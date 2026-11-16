@@ -1,6 +1,7 @@
 import { useState } from "react";
-import type { PreviewState, ToolKind, YtDlpInfo } from "../types";
-import { formatCount, formatDuration, presetLabel } from "../lib/format";
+import type { LocalMedia, PreviewState, SourceKind, ToolKind, YtDlpInfo } from "../types";
+import { formatBytes, formatCount, formatDuration, presetLabel } from "../lib/format";
+import { localMeta } from "../lib/local";
 import { MAX_LISTED_ENTRIES, entryPosition } from "../lib/playlist";
 import { Icon } from "./Icon";
 import { Notice } from "./Notice";
@@ -16,12 +17,17 @@ interface ToolWorkspaceProps {
   mode: "simple" | "advanced";
   onModeChange: (mode: "simple" | "advanced") => void;
   canAdvanced: boolean;
+  source: SourceKind;
+  onSourceChange: (source: SourceKind) => void;
   url: string;
   onUrlChange: (value: string) => void;
   analyzing: boolean;
   elapsed: number;
   onAnalyze: () => void;
   info: YtDlpInfo | null;
+  local: LocalMedia | null;
+  localPicking: boolean;
+  onPickLocal: () => void;
   analysisError: string;
   onClearAnalysisError: () => void;
   preview: PreviewState;
@@ -49,12 +55,17 @@ export function ToolWorkspace({
   mode,
   onModeChange,
   canAdvanced,
+  source,
+  onSourceChange,
   url,
   onUrlChange,
   analyzing,
   elapsed,
   onAnalyze,
   info,
+  local,
+  localPicking,
+  onPickLocal,
   analysisError,
   onClearAnalysisError,
   preview,
@@ -76,11 +87,13 @@ export function ToolWorkspace({
   onSelectRange,
   onAddClips,
 }: ToolWorkspaceProps) {
-  const advanced = mode === "advanced" && canAdvanced;
-  const format = presetLabel(preset);
-  const title =
-    info?.title || info?.fulltitle || info?.id || (tool === "video" ? "Vídeo" : "Audio");
-  const duration = info?.duration ?? 0;
+  const isLocal = source === "file";
+  const advanced = isLocal || (mode === "advanced" && canAdvanced);
+  const format = isLocal ? "Copia rápida" : presetLabel(preset);
+  const title = isLocal
+    ? local?.title || "Archivo local"
+    : info?.title || info?.fulltitle || info?.id || (tool === "video" ? "Vídeo" : "Audio");
+  const duration = isLocal ? local?.duration ?? 0 : info?.duration ?? 0;
 
   const hint = isPlaylist
     ? "La selección se añade como un solo trabajo."
@@ -91,6 +104,11 @@ export function ToolWorkspace({
       : preset === "2160" || preset === "1440"
         ? "A esta resolución el sitio suele servir VP9/AV1; el archivo sigue siendo MP4."
         : "MP4 con H.264/AAC cuando el sitio lo ofrece.";
+
+  const localHint =
+    tool === "video"
+      ? "Copia rápida: el vídeo no se recodifica y el audio pasa a AAC solo si el contenedor lo necesita. El clip puede empezar en el keyframe anterior."
+      : "Se extrae y corta la pista de audio original, sin recodificar.";
 
   return (
     <section
@@ -104,69 +122,222 @@ export function ToolWorkspace({
         <div className="tool-title">
           <h1>{tool === "video" ? "Vídeo" : "Audio"}</h1>
           <p>
-            {tool === "video"
-              ? "Descarga el vídeo completo o prepara tramos en el editor."
-              : "Extrae el audio en el formato que necesites, con o sin cortes."}
+            {isLocal
+              ? tool === "video"
+                ? "Abre un archivo del disco y recorta tramos sin recodificar."
+                : "Abre un audio o un vídeo y corta su pista de sonido."
+              : tool === "video"
+                ? "Descarga el vídeo completo o prepara tramos en el editor."
+                : "Extrae el audio en el formato que necesites, con o sin cortes."}
           </p>
         </div>
 
-        <div className="mode-switch" role="group" aria-label="Modo de la herramienta">
-          <button
-            type="button"
-            className={mode === "simple" ? "is-on" : ""}
-            aria-pressed={mode === "simple"}
-            onClick={() => onModeChange("simple")}
-          >
-            Simple
-          </button>
-          <button
-            type="button"
-            className={mode === "advanced" ? "is-on" : ""}
-            aria-pressed={mode === "advanced"}
-            onClick={() => onModeChange("advanced")}
-            disabled={!canAdvanced}
-            title={canAdvanced ? undefined : "El montaje por tramos necesita una duración conocida y un vídeo suelto"}
-          >
-            Avanzado
-          </button>
-        </div>
+        {!isLocal && (
+          <div className="mode-switch" role="group" aria-label="Modo de la herramienta">
+            <button
+              type="button"
+              className={mode === "simple" ? "is-on" : ""}
+              aria-pressed={mode === "simple"}
+              onClick={() => onModeChange("simple")}
+            >
+              Simple
+            </button>
+            <button
+              type="button"
+              className={mode === "advanced" ? "is-on" : ""}
+              aria-pressed={mode === "advanced"}
+              onClick={() => onModeChange("advanced")}
+              disabled={!canAdvanced}
+              title={
+                canAdvanced
+                  ? undefined
+                  : "El montaje por tramos necesita una duración conocida y un vídeo suelto"
+              }
+            >
+              Avanzado
+            </button>
+          </div>
+        )}
       </header>
 
-      <form
-        className="url-row"
-        onSubmit={(event) => {
-          event.preventDefault();
-          onAnalyze();
-        }}
-      >
-        <div className="url-field">
-          <Icon name={tool === "video" ? "film" : "music"} size={17} />
-          <input
-            value={url}
-            onChange={(event) => onUrlChange(event.target.value)}
-            placeholder="https://www.youtube.com/watch?v=…"
-            spellCheck={false}
-            aria-label="URL de la fuente"
-          />
-        </div>
-        <button type="submit" className="button solid" disabled={analyzing || !url.trim()}>
-          {analyzing ? (elapsed > 0 ? `Leyendo… ${elapsed} s` : "Leyendo…") : "Cargar"}
+      <div className="source-switch" role="group" aria-label="Origen del archivo">
+        <button
+          type="button"
+          className={!isLocal ? "is-on" : ""}
+          aria-pressed={!isLocal}
+          onClick={() => onSourceChange("url")}
+        >
+          Enlace
         </button>
-      </form>
+        <button
+          type="button"
+          className={isLocal ? "is-on" : ""}
+          aria-pressed={isLocal}
+          onClick={() => onSourceChange("file")}
+        >
+          Archivo local
+        </button>
+      </div>
 
-      <p className="hint tool-hint">
-        {analyzing && elapsed >= 12
-          ? "Las playlists y canales grandes tardan más. Seguimos esperando."
-          : "YouTube, playlists, canales y otros sitios compatibles con yt-dlp."}
-      </p>
+      {!isLocal ? (
+        <>
+          <form
+            className="url-row"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onAnalyze();
+            }}
+          >
+            <div className="url-field">
+              <Icon name={tool === "video" ? "film" : "music"} size={17} />
+              <input
+                value={url}
+                onChange={(event) => onUrlChange(event.target.value)}
+                placeholder="https://www.youtube.com/watch?v=…"
+                spellCheck={false}
+                aria-label="URL de la fuente"
+              />
+            </div>
+            <button type="submit" className="button solid" disabled={analyzing || !url.trim()}>
+              {analyzing ? (elapsed > 0 ? `Leyendo… ${elapsed} s` : "Leyendo…") : "Cargar"}
+            </button>
+          </form>
+
+          <p className="hint tool-hint">
+            {analyzing && elapsed >= 12
+              ? "Las playlists y canales grandes tardan más. Seguimos esperando."
+              : "YouTube, playlists, canales y otros sitios compatibles con yt-dlp."}
+          </p>
+        </>
+      ) : (
+        <div className="local-row">
+          <button
+            type="button"
+            className="button solid"
+            onClick={onPickLocal}
+            disabled={localPicking || analyzing}
+          >
+            <Icon name="folder" size={15} />
+            {localPicking
+              ? "Abriendo…"
+              : local
+                ? "Cambiar archivo"
+                : "Abrir archivo"}
+          </button>
+          <p className="hint">
+            También puedes soltar un vídeo o audio en la ventana. No se copia el archivo
+            completo: solo se leen sus datos y se corta lo que pidas.
+          </p>
+        </div>
+      )}
 
       {analysisError && (
-        <Notice title="No se pudo leer la URL" onClose={onClearAnalysisError}>
+        <Notice
+          title={isLocal ? "No se pudo abrir el archivo" : "No se pudo leer la URL"}
+          onClose={onClearAnalysisError}
+        >
           {analysisError}
         </Notice>
       )}
 
-      {!info ? (
+      {isLocal ? (
+        !local ? (
+          <div className={`tool-empty local-empty${analyzing ? " is-busy" : ""}`}>
+            <div className="empty-reel" aria-hidden="true">
+              <Icon name="film" size={30} />
+            </div>
+            <div>
+              <h2>
+                {analyzing
+                  ? elapsed > 0
+                    ? `Leyendo el archivo… ${elapsed} s`
+                    : "Leyendo el archivo…"
+                  : "Suelta un vídeo o audio para empezar"}
+              </h2>
+              <p>
+                {analyzing
+                  ? "FFprobe está leyendo la duración y los códecs. En archivos muy grandes suele ser cuestión de segundos."
+                  : "MP4, MKV, MOV, WebM, MP3, FLAC, WAV… El editor se abre directo en modo tramos."}
+              </p>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="source-block">
+              <div className="source-thumb-lg">
+                {local.thumbnailUrl ? (
+                  <img src={local.thumbnailUrl} alt="" />
+                ) : (
+                  <div className="thumb-empty">
+                    <Icon name={tool === "video" ? "film" : "music"} size={24} />
+                  </div>
+                )}
+              </div>
+              <div className="source-copy">
+                <div className="source-tags">
+                  <span className="tag">Archivo local</span>
+                  {local.container && (
+                    <span className="tag muted-tag mono">{local.container.toUpperCase()}</span>
+                  )}
+                </div>
+                <h2 className="source-title">{local.title}</h2>
+                <div className="meta-line">
+                  {localMeta(local).map((item) => (
+                    <span key={item} className="mono">
+                      {item}
+                    </span>
+                  ))}
+                  <span className="mono">{formatBytes(local.size)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="advanced-options">
+              <div className="field compact grow">
+                <span>Carpeta de salida</span>
+                <div className="input-row">
+                  <input
+                    value={outputDir}
+                    onChange={(event) => onOutputDirChange(event.target.value)}
+                    spellCheck={false}
+                  />
+                  <button
+                    type="button"
+                    className="button small"
+                    onClick={onPickFolder}
+                    aria-label="Elegir carpeta de salida"
+                  >
+                    <Icon name="folder" size={14} />
+                    Elegir
+                  </button>
+                </div>
+              </div>
+              <div className="field compact">
+                <span>Salida</span>
+                <div className="local-output-pill">Copia rápida</div>
+              </div>
+            </div>
+
+            <p className="hint tool-hint">{localHint}</p>
+
+            {advanced && (
+              <TimelineEditor
+                kind={tool}
+                title={title}
+                sourceKey={`${local.path}:${local.size}`}
+                thumbnail={local.thumbnailUrl}
+                duration={duration}
+                preview={preview}
+                formatLabel={format}
+                localFile
+                onRetryPreview={onRetryPreview}
+                onCancelPreview={onCancelPreview}
+                onAddClips={onAddClips}
+              />
+            )}
+          </>
+        )
+      ) : !info ? (
         <div className="tool-empty">
           <div className="empty-reel" aria-hidden="true">
             <Icon name="reel" size={30} />
@@ -194,7 +365,9 @@ export function ToolWorkspace({
             </div>
             <div className="source-copy">
               <div className="source-tags">
-                <span className="tag">{isPlaylist ? "Playlist" : tool === "video" ? "Vídeo" : "Audio"}</span>
+                <span className="tag">
+                  {isPlaylist ? "Playlist" : tool === "video" ? "Vídeo" : "Audio"}
+                </span>
               </div>
               <h2 className="source-title">{title}</h2>
               <div className="meta-line">

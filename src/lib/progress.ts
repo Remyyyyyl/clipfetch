@@ -29,7 +29,11 @@ export interface ProgressAggregate {
  */
 export function aggregateProgress(job: Job, payloadPercent: number): ProgressAggregate {
   const entryTotal = Math.max(1, job.request.totalItems ?? 1);
-  const filesTotal = Math.max(1, job.filesTotal ?? expectedFiles(job.request.preset));
+  const filesTotal = Math.max(
+    1,
+    job.filesTotal ??
+      (job.request.source === "file" ? 1 : expectedFiles(job.request.preset)),
+  );
   const entryIndex = clamp(job.entryIndex ?? 1, 1, entryTotal);
 
   let filesDone = clamp(job.filesDone ?? 0, 0, filesTotal - 1);
@@ -71,7 +75,8 @@ export function applyPlan(job: Job, payload: JobPlanPayload): Partial<Job> {
 }
 
 export function filesLabel(job: Job): string {
-  const total = job.filesTotal ?? expectedFiles(job.request.preset);
+  const total =
+    job.filesTotal ?? (job.request.source === "file" ? 1 : expectedFiles(job.request.preset));
   if (total <= 1) return "";
   return `${Math.min(total, (job.filesDone ?? 0) + 1)}/${total}`;
 }

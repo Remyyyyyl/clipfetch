@@ -48,6 +48,7 @@ export const AUDIO_PRESETS = [
 const LEGACY_PRESET_LABELS: Record<string, string> = {
   mp3: "MP3 320 kbps",
   best: "Máxima disponible",
+  copy: "Copia rápida",
 };
 
 export function presetLabel(value: string): string {

@@ -1,4 +1,5 @@
-import type { DownloadRequest, Job, JobStatus } from "../types";
+import type { DownloadRequest, Job, JobStatus, SourceKind, ToolKind } from "../types";
+import { isAudioPreset } from "./format";
 import { loadSection, saveSection } from "./persistence";
 
 export const HISTORY_VERSION = 1;
@@ -50,12 +51,25 @@ function restoreRequest(value: unknown): DownloadRequest | null {
     Number.isFinite(clipEnd) &&
     clipStart >= 0 &&
     clipEnd > clipStart;
+  const source: SourceKind = value.source === "file" ? "file" : "url";
+  const preset = typeof value.preset === "string" ? value.preset : "best";
+  const kind: ToolKind =
+    value.kind === "audio"
+      ? "audio"
+      : value.kind === "video"
+        ? "video"
+        : isAudioPreset(preset)
+          ? "audio"
+          : "video";
 
   return {
     jobId,
+    source,
+    localPath: optionalString(value.localPath) ?? (source === "file" ? url : null),
+    kind,
     url,
     title: typeof value.title === "string" ? value.title : "",
-    preset: typeof value.preset === "string" ? value.preset : "best",
+    preset,
     outputDir: typeof value.outputDir === "string" ? value.outputDir : "",
     isPlaylist: value.isPlaylist === true,
     cookiesMode: typeof value.cookiesMode === "string" ? value.cookiesMode : "none",

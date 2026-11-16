@@ -77,15 +77,41 @@ export interface Settings extends CookiesSettings {
 
 export type ToolKind = "video" | "audio";
 
+/** De dónde sale el archivo: un enlace (yt-dlp) o el disco. */
+export type SourceKind = "url" | "file";
+
+/** Archivo local leído con FFprobe, listo para el editor. */
+export interface LocalMedia {
+  path: string;
+  title: string;
+  duration: number | null;
+  size: number;
+  width: number | null;
+  height: number | null;
+  videoCodec: string | null;
+  audioCodec: string | null;
+  container: string;
+  hasVideo: boolean;
+  hasAudio: boolean;
+  /** Ruta del JPEG de miniatura en la caché. */
+  thumbnail: string | null;
+  /** URL ya convertida con convertFileSrc. */
+  thumbnailUrl?: string;
+}
+
 /** Elemento preparado en la cola, todavía sin descargar. */
 export interface StagedItem {
   id: string;
   kind: ToolKind;
+  source: SourceKind;
   url: string;
+  localPath: string | null;
   title: string;
   thumbnail?: string;
   uploader?: string;
   duration?: number | null;
+  sizeBytes?: number;
+  resolution?: string;
   preset: string;
   clip: { start: number; end: number } | null;
   isPlaylist: boolean;
@@ -95,6 +121,11 @@ export interface StagedItem {
 
 export interface DownloadRequest {
   jobId: string;
+  source: SourceKind;
+  /** Solo en origen local: ruta absoluta del archivo. */
+  localPath: string | null;
+  /** Herramienta con la que se creó el trabajo. */
+  kind: ToolKind;
   url: string;
   title: string;
   preset: string;

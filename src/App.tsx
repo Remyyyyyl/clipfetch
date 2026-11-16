@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import "@fontsource-variable/bricolage-grotesque";
 import "@fontsource/ibm-plex-mono/latin-400.css";
@@ -13,11 +14,13 @@ import type {
   EngineUpdate,
   Job,
   JobPlanPayload,
+  LocalMedia,
   PreviewFile,
   PreviewProgress,
   PreviewState,
   PreviewStream,
   Settings,
+  SourceKind,
   StagedItem,
   ToolKind,
   YtDlpInfo,
@@ -37,6 +40,12 @@ import { loadHistory, saveHistory } from "./lib/history";
 import { useFileStorage } from "./lib/persistence";
 import { buildPlaylistItems, entryPositions, isFullSelection } from "./lib/playlist";
 import { aggregateProgress, applyPlan } from "./lib/progress";
+import {
+  LOCAL_EXTENSIONS,
+  LOCAL_PRESET,
+  isLocalMediaPath,
+  resolutionLabel,
+} from "./lib/local";
 import { LogBuffer } from "./lib/logBuffer";
 import { Icon } from "./components/Icon";
 import { Notice } from "./components/Notice";
@@ -112,11 +121,15 @@ function App() {
 
   const [tool, setTool] = useState<ToolKind>("video");
   const [mode, setMode] = useState<"simple" | "advanced">("simple");
+  const [source, setSource] = useState<SourceKind>("url");
   const [url, setUrl] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeSince, setAnalyzeSince] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [info, setInfo] = useState<YtDlpInfo | null>(null);
+  const [local, setLocal] = useState<LocalMedia | null>(null);
+  const [localPicking, setLocalPicking] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   const [analysisError, setAnalysisError] = useState("");
   const [selection, setSelection] = useState<Set<number>>(() => new Set());
   const [preview, setPreview] = useState<PreviewState>({ status: "idle" });
@@ -130,6 +143,9 @@ function App() {
   const startingRef = useRef<Set<string>>(new Set());
   const previewTicketRef = useRef(0);
   const previewRequestRef = useRef("");
+  const previewLocalRef = useRef(false);
+  const inspectTicketRef = useRef(0);
+  const analyzeTicketRef = useRef(0);
   const settingsRef = useRef<Settings | null>(null);
   const logBufferRef = useRef<LogBuffer | null>(null);
 
@@ -408,7 +424,22 @@ function App() {
       previous.map((job) => (job.id === next.id ? { ...job, status: "starting" } : job)),
     );
 
-    void invoke<string>("start_download", { req: next.request })
+    const isLocal = next.request.source === "file";
+    const started = isLocal
+      ? invoke<string>("start_local_cut", {
+          req: {
+            jobId: next.id,
+            inputPath: next.request.localPath ?? next.request.url,
+            title: next.request.title,
+            kind: next.request.kind,
+            outputDir: next.request.outputDir,
+            clipStart: next.request.clipStart ?? 0,
+            clipEnd: next.request.clipEnd ?? 0,
+          },
+        })
+      : invoke<string>("start_download", { req: next.request });
+
+    void started
       .then(() => {
         setJobs((previous) =>
           previous.map((job) =>
@@ -473,6 +504,7 @@ function App() {
       ticket: number,
       localError?: string,
     ) => {
+      previewLocalRef.current = false;
       setPreview({
         status: "loading",
         local: false,
@@ -516,6 +548,7 @@ function App() {
       previewTicketRef.current = ticket;
       const requestId = crypto.randomUUID();
       previewRequestRef.current = requestId;
+      previewLocalRef.current = false;
       setPreview({
         status: "loading",
         local: true,
@@ -554,12 +587,61 @@ function App() {
     [fetchRemotePreview],
   );
 
+  const prepareLocalPreview = useCallback(
+    async (
+      path: string,
+      kind: ToolKind,
+      duration: number | null,
+      force = false,
+    ) => {
+      const ticket = previewTicketRef.current + 1;
+      previewTicketRef.current = ticket;
+      const requestId = crypto.randomUUID();
+      previewRequestRef.current = requestId;
+      previewLocalRef.current = true;
+      setPreview({
+        status: "loading",
+        local: true,
+        progress: 0,
+        detail: "Preparando la vista previa del archivo…",
+      });
+
+      try {
+        const file = await invoke<PreviewFile>("prepare_local_preview", {
+          path,
+          mode: kind === "audio" ? "audio" : "video",
+          duration:
+            duration === null || !Number.isFinite(duration)
+              ? null
+              : Math.max(0, Math.floor(duration)),
+          requestId,
+          force,
+        });
+        if (previewTicketRef.current !== ticket) return;
+        previewRequestRef.current = "";
+        setPreview({
+          status: "ready",
+          url: convertFileSrc(file.path),
+          local: true,
+          progress: 100,
+        });
+      } catch (error) {
+        if (previewTicketRef.current !== ticket) return;
+        previewRequestRef.current = "";
+        setPreview({ status: "error", local: true, message: safeMessage(error) });
+      }
+    },
+    [],
+  );
+
   const cancelPreview = useCallback((clear = true) => {
     const requestId = previewRequestRef.current;
+    const isLocal = previewLocalRef.current;
     previewRequestRef.current = "";
     previewTicketRef.current += 1;
     if (requestId) {
-      void invoke("cancel_preview", { requestId }).catch(() => {
+      const command = isLocal ? "cancel_local_preview" : "cancel_preview";
+      void invoke(command, { requestId }).catch(() => {
         // La cancelación es best-effort: si el proceso ya terminó, no hay nada que hacer.
       });
     }
@@ -568,6 +650,8 @@ function App() {
 
   const analyze = async () => {
     if (!settings || !url.trim()) return;
+    const ticket = analyzeTicketRef.current + 1;
+    analyzeTicketRef.current = ticket;
     setAnalyzing(true);
     setAnalyzeSince(Date.now());
     setAnalysisError("");
@@ -580,6 +664,7 @@ function App() {
         cookiesMode: settings.cookiesMode,
         cookiesPath: settings.cookiesPath ? settings.cookiesPath : null,
       });
+      if (analyzeTicketRef.current !== ticket) return;
       const playlist = result._type === "playlist";
       setInfo(result);
       if (playlist) {
@@ -591,16 +676,120 @@ function App() {
         updateSettings({ preset: bestVideoPreset(result) });
       }
     } catch (error) {
+      if (analyzeTicketRef.current !== ticket) return;
       setAnalysisError(safeMessage(error));
     } finally {
-      setAnalyzing(false);
-      setAnalyzeSince(null);
+      if (analyzeTicketRef.current === ticket) {
+        setAnalyzing(false);
+        setAnalyzeSince(null);
+      }
     }
+  };
+
+  const inspectLocalFile = useCallback(
+    async (path: string) => {
+      const target = path.trim();
+      if (!target) return;
+      if (!isLocalMediaPath(target)) {
+        setAnalysisError("Elige un archivo de vídeo o audio compatible.");
+        return;
+      }
+
+      const ticket = inspectTicketRef.current + 1;
+      inspectTicketRef.current = ticket;
+      analyzeTicketRef.current += 1;
+      setAnalyzing(true);
+      setAnalyzeSince(Date.now());
+      setAnalysisError("");
+      setGlobalError("");
+      cancelPreview(true);
+      setInfo(null);
+      setLocal(null);
+
+      try {
+        const media = await invoke<LocalMedia>("inspect_local", { path: target });
+        if (inspectTicketRef.current !== ticket) return;
+        if (!media.duration || media.duration <= 1) {
+          throw new Error(
+            "No se pudo leer la duración del archivo. Prueba con otro formato o revisa que no esté dañado.",
+          );
+        }
+        if (tool === "video" && !media.hasVideo) {
+          throw new Error("Ese archivo no tiene pista de vídeo. Cambia a la herramienta Audio.");
+        }
+        if (tool === "audio" && !media.hasAudio) {
+          throw new Error("Ese archivo no tiene pista de audio.");
+        }
+        setLocal({
+          ...media,
+          thumbnailUrl: media.thumbnail ? convertFileSrc(media.thumbnail) : undefined,
+        });
+        setMode("advanced");
+      } catch (error) {
+        if (inspectTicketRef.current !== ticket) return;
+        setAnalysisError(safeMessage(error));
+      } finally {
+        if (inspectTicketRef.current === ticket) {
+          setAnalyzing(false);
+          setAnalyzeSince(null);
+        }
+      }
+    },
+    [tool, cancelPreview],
+  );
+
+  const pickLocalFile = async () => {
+    if (localPicking) return;
+    setLocalPicking(true);
+    try {
+      const selected = await open({
+        multiple: false,
+        title: "Abrir vídeo o audio",
+        filters: [{ name: "Vídeo o audio", extensions: LOCAL_EXTENSIONS }],
+      });
+      if (typeof selected === "string") await inspectLocalFile(selected);
+    } catch (error) {
+      setGlobalError(safeMessage(error));
+    } finally {
+      setLocalPicking(false);
+    }
+  };
+
+  const switchSource = (next: SourceKind) => {
+    if (next === source) return;
+    inspectTicketRef.current += 1;
+    analyzeTicketRef.current += 1;
+    cancelPreview(true);
+    setSource(next);
+    setInfo(null);
+    setLocal(null);
+    setSelection(new Set());
+    setAnalysisError("");
+    setAnalyzing(false);
+    setAnalyzeSince(null);
+    setMode(next === "file" ? "advanced" : "simple");
   };
 
   const changeTool = (next: ToolKind) => {
     if (next === tool) return;
+    analyzeTicketRef.current += 1;
+    inspectTicketRef.current += 1;
+    setAnalyzing(false);
+    setAnalyzeSince(null);
     setTool(next);
+    setAnalysisError("");
+    if (source === "file" && local) {
+      const missing = next === "video" ? !local.hasVideo : !local.hasAudio;
+      if (missing) {
+        setLocal(null);
+        cancelPreview(true);
+        setAnalysisError(
+          next === "video"
+            ? "Ese archivo no tiene pista de vídeo. Cambia a la herramienta Audio."
+            : "Ese archivo no tiene pista de audio.",
+        );
+      }
+    }
   };
 
   const positions = useMemo(() => entryPositions(info?.entries ?? []), [info]);
@@ -677,7 +866,9 @@ function App() {
     const item: StagedItem = {
       id: crypto.randomUUID(),
       kind: tool,
+      source: "url",
       url: targetUrl,
+      localPath: null,
       title: baseTitle,
       thumbnail: thumbnailOf(info),
       uploader: info.uploader || info.channel,
@@ -695,11 +886,57 @@ function App() {
   };
 
   const stageClips = (ranges: Array<{ start: number; end: number }>) => {
+    if (source === "file") {
+      if (!local) return;
+      const targetPath = local.path;
+      const created: StagedItem[] = ranges
+        .filter(
+          (range) =>
+            !staged.some(
+              (item) =>
+                item.url === targetPath &&
+                item.kind === tool &&
+                item.preset === LOCAL_PRESET &&
+                item.clip?.start === range.start &&
+                item.clip?.end === range.end,
+            ),
+        )
+        .map((range) => ({
+          id: crypto.randomUUID(),
+          kind: tool,
+          source: "file" as const,
+          url: targetPath,
+          localPath: targetPath,
+          title: local.title,
+          thumbnail: local.thumbnailUrl,
+          duration: local.duration,
+          sizeBytes: local.size,
+          resolution: resolutionLabel(local),
+          preset: LOCAL_PRESET,
+          clip: range,
+          isPlaylist: false,
+          playlistItems: null,
+          totalItems: 1,
+        }));
+
+      if (created.length === 0) {
+        setGlobalInfo("Esos tramos ya están en la cola.");
+        return;
+      }
+
+      setStaged((previous) => [...previous, ...created]);
+      setGlobalError("");
+      setGlobalInfo(
+        `${created.length} ${created.length === 1 ? "tramo añadido" : "tramos añadidos"} a la cola.`,
+      );
+      return;
+    }
+
     if (!info) return;
     const targetUrl = info.webpage_url || url.trim();
     const baseTitle = info.title || info.id || "Vídeo";
 
-    const created = ranges
+    const created: StagedItem[] = ranges
       .filter(
         (range) =>
           !staged.some(
@@ -713,7 +950,9 @@ function App() {
       .map((range) => ({
         id: crypto.randomUUID(),
         kind: tool,
+        source: "url" as const,
         url: targetUrl,
+        localPath: null,
         title: baseTitle,
         thumbnail: thumbnailOf(info),
         uploader: info.uploader || info.channel,
@@ -772,6 +1011,9 @@ function App() {
 
     const request: DownloadRequest = {
       jobId,
+      source: item.source,
+      localPath: item.localPath,
+      kind: item.kind,
       url: item.url,
       title: item.title,
       preset: item.preset,
@@ -830,6 +1072,8 @@ function App() {
         !jobs.some(
           (job) =>
             isActive(job) &&
+            job.request.source === item.source &&
+            job.request.kind === item.kind &&
             job.request.url === item.url &&
             (job.request.clipStart ?? null) === (item.clip?.start ?? null) &&
             (job.request.clipEnd ?? null) === (item.clip?.end ?? null),
@@ -939,11 +1183,18 @@ function App() {
     (job) => job.status === "starting" || job.status === "downloading",
   ).length;
 
-  const canAdvanced = Boolean(
-    info && info._type !== "playlist" && (info.duration ?? 0) > 1,
-  );
+  const canAdvanced =
+    source === "file"
+      ? Boolean(local && (local.duration ?? 0) > 1)
+      : Boolean(info && info._type !== "playlist" && (info.duration ?? 0) > 1);
 
   const previewRetry = () => {
+    if (source === "file") {
+      if (!local) return;
+      cancelPreview(false);
+      void prepareLocalPreview(local.path, tool, local.duration, true);
+      return;
+    }
     if (!info || !settings) return;
     cancelPreview(false);
     void preparePreview(
@@ -956,6 +1207,7 @@ function App() {
   };
 
   useEffect(() => {
+    if (source !== "url") return;
     if (!info || mode !== "advanced" || !canAdvanced) {
       if (previewRequestRef.current) cancelPreview(true);
       return;
@@ -979,7 +1231,86 @@ function App() {
     };
     // La calidad o la carpeta no deben reiniciar la copia local; solo el vídeo o la herramienta.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, info, tool, canAdvanced, preparePreview, cancelPreview]);
+  }, [source, mode, info, tool, canAdvanced, preparePreview, cancelPreview]);
+
+  useEffect(() => {
+    if (source !== "file") return;
+    if (!local || mode !== "advanced" || !canAdvanced) {
+      if (previewRequestRef.current) cancelPreview(true);
+      return;
+    }
+
+    let disposed = false;
+    const timer = window.setTimeout(() => {
+      if (disposed) return;
+      void prepareLocalPreview(local.path, tool, local.duration, false);
+    }, 60);
+
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+      cancelPreview(true);
+    };
+  }, [source, local, mode, tool, canAdvanced, prepareLocalPreview, cancelPreview]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | undefined;
+
+    const onEvent = (event: {
+      payload:
+        | { type: "enter"; paths: string[] }
+        | { type: "over" }
+        | { type: "drop"; paths: string[] }
+        | { type: "leave" };
+    }) => {
+      if (event.payload.type === "leave") {
+        setDragActive(false);
+        return;
+      }
+      if (event.payload.type !== "drop") {
+        setDragActive(true);
+        return;
+      }
+
+      setDragActive(false);
+      const target = event.payload.paths.find(isLocalMediaPath);
+      if (!target) {
+        setGlobalError("Suelta un archivo de vídeo o audio.");
+        return;
+      }
+      if (event.payload.paths.length > 1) {
+        setGlobalInfo("Se abre el primer archivo de vídeo o audio soltado.");
+      }
+      setSource("file");
+      setMode("advanced");
+      setInfo(null);
+      setAnalysisError("");
+      void inspectLocalFile(target);
+    };
+
+    void (async () => {
+      for (let attempt = 0; attempt < 3 && !disposed; attempt += 1) {
+        try {
+          const stop = await getCurrentWebview().onDragDropEvent(onEvent);
+          if (disposed) {
+            stop();
+            return;
+          }
+          unlisten = stop;
+          return;
+        } catch {
+          if (disposed) return;
+          await new Promise((resolve) => window.setTimeout(resolve, 400));
+        }
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [inspectLocalFile]);
 
   if (!settings || !engine) {
     return <BootScreen error={bootError} onRetry={loadApp} />;
@@ -1040,12 +1371,17 @@ function App() {
               mode={mode}
               onModeChange={setMode}
               canAdvanced={canAdvanced}
+              source={source}
+              onSourceChange={switchSource}
               url={url}
               onUrlChange={setUrl}
               analyzing={analyzing}
               elapsed={elapsed}
               onAnalyze={() => void analyze()}
               info={info}
+              local={local}
+              localPicking={localPicking}
+              onPickLocal={() => void pickLocalFile()}
               analysisError={analysisError}
               onClearAnalysisError={() => setAnalysisError("")}
               preview={preview}
@@ -1079,6 +1415,16 @@ function App() {
           )}
         </main>
       </div>
+
+      {dragActive && (
+        <div className="drop-overlay" aria-hidden="true">
+          <div className="drop-card">
+            <Icon name="film" size={30} />
+            <strong>Suelta el vídeo o el audio</strong>
+            <span>Se abrirá en el editor de tramos.</span>
+          </div>
+        </div>
+      )}
 
       {settingsOpen && engine.installed && (
         <SettingsDrawer

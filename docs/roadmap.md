@@ -63,6 +63,42 @@ SHA-256: `8e4135cdf1f816c0a69090176a39ee66e97a83cf7cf53bdfcbb6e786e97d643c`.
   máxima real (hasta 2160p) y se puede cambiar a mano. En playlists se usa 1080p
   como base.
 
+## 1.1 · Recorte local
+
+Decisiones de la versión 1.1:
+
+- **Dos orígenes en las mismas herramientas**: `Enlace` y `Archivo local`. Con
+  archivo local la herramienta entra directo al editor; Simple/Avanzado y los
+  presets de calidad quedan solo para URL.
+- **Añadir archivos**: botón del diálogo y arrastrar y soltar nativo de Tauri.
+  Si se sueltan varios, se abre el primero.
+- **Inspección inmediata** con FFprobe: título, duración, tamaño, resolución,
+  códecs y miniatura generada con FFmpeg (cacheada en `preview-local`).
+- **Vista previa en escalera**: original si el contenedor y los códecs son
+  compatibles con WebView2; remux a MP4 con `-c copy` si solo falla el
+  contenedor (hasta 4 GB y con AAC solo si la pista de audio no cabe); proxy
+  480p con progreso si el códec no se puede reproducir o el archivo es enorme.
+  El botón «Reintentar» fuerza la copia.
+- **Corte rápido**: `ffmpeg -ss START -i archivo -t DURACIÓN -c:v copy
+  -movflags +faststart`, con MP4; el audio se copia si cabe y, si no, se
+  convierte a AAC. En códecs de vídeo que no caben en MP4 (VP9, ProRes…) se usa
+  MKV con copia. Audio local: pista original (AAC→M4A, MP3→MP3, FLAC→FLAC,
+  PCM→WAV, AC3/EAC3/DTS nativos, MKA como respaldo). El pre-roll del keyframe
+  anterior queda oculto en MP4; en MKV/WebM puede verse.
+- **Carpeta de salida**: la carpeta de descargas global, con el mismo esquema
+  `<Título>/HH-MM-SS_HH-MM-SS <Título>.<ext>`. Nunca se sobrescribe: se añade
+  ` (2)`, ` (3)`…
+- **Cola e historial**: mismo progreso por evento (`job://progress`), cancelación
+  por PID, reintento y persistencia. Los trabajos locales muestran «Cortando».
+
+Pendiente de probar antes de publicar:
+
+- Un MP4 H.264 grande (>4 GB), un MKV H.264, un MKV HEVC y un audio FLAC/WAV.
+- Cancelar a mitad de corte y comprobar que no queda archivo parcial.
+- Confirmar que el arrastre del raíl sigue funcionando con el drag & drop nativo.
+- Generar el instalador y actualizar el SHA-256 del README.
+
+
 ## Sprint 1 (hecho)
 
 | Punto | Qué se hizo |

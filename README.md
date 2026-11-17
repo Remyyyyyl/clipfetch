@@ -1,10 +1,10 @@
 # ClipFetch
 
-Interfaz de escritorio sencilla para [yt-dlp](https://github.com/yt-dlp/yt-dlp) y FFmpeg en Windows. Pega una URL, elige calidad y descarga, o abre un vídeo local y recorta clips sin recodificar. Está pensada para YouTube, pero acepta cualquier sitio compatible con yt-dlp y casi cualquier archivo de vídeo o audio.
+Interfaz de escritorio sencilla para [yt-dlp](https://github.com/yt-dlp/yt-dlp) y FFmpeg en Windows. Pega una URL, elige calidad y descarga, o abre un vídeo local y recorta clips; todo sale en H.264/AAC listo para editar. Está pensada para YouTube, pero acepta cualquier sitio compatible con yt-dlp y casi cualquier archivo de vídeo o audio.
 
 ## Descargar e instalar
 
-1. Entra en [Releases](https://github.com/Remyyyyyl/clipfetch/releases/latest) y descarga el instalador más reciente (`ClipFetch_1.2.0_x64-setup.exe` en la 1.2).
+1. Entra en [Releases](https://github.com/Remyyyyyl/clipfetch/releases/latest) y descarga el instalador más reciente (`ClipFetch_1.3.0_x64-setup.exe` en la 1.3).
 2. Ejecuta el instalador. Se instala por usuario y no pide permisos de administrador.
 3. Abre ClipFetch y pulsa **Instalar motor**. La app descarga yt-dlp, FFmpeg y Deno (~250 MB de descarga; ~450 MB en disco).
 4. Pega una URL, elige la calidad y la carpeta, y pulsa **Añadir a la cola**. Para recortar un archivo del disco, cambia a **Archivo local** y ábrelo (o suéltalo en la ventana).
@@ -17,7 +17,7 @@ Interfaz de escritorio sencilla para [yt-dlp](https://github.com/yt-dlp/yt-dlp) 
 
 SHA-256: cada release publica el hash del instalador en su página de GitHub.
 
-> Estado: versión 1.2 con la nueva interfaz de escritorio: menú superior, botonera, workspace central, navegador de medios y barra de clips a la derecha. Siguiente fase: firma de código, verificación de checksums y actualizador.
+> Estado: versión 1.3 con la nueva interfaz de escritorio y salida lista para editores (H.264/AAC). Siguiente fase: firma de código, verificación de checksums y actualizador.
 
 ## Funciones
 
@@ -26,9 +26,10 @@ SHA-256: cada release publica el hash del instalador en su página de GitHub.
 - **Barra de clips a la derecha**: pestañas de línea de tiempo, Preparado y Descargas; se puede reordenar, quitar y **exportar de una vez**.
 - **Medios**: navegador de la carpeta de salida con doble clic para abrir un vídeo o audio en el editor.
 - **Modo avanzado**: copia local de baja resolución (hasta 480p) con audio para editar con fluidez, imán de ajuste, regla descriptiva, zoombar tipo Kdenlive (arrastra la ventana para recorrer y sus bordes para hacer zoom), atajos globales, control de volumen, repetir, varios tramos, selección con deshacer/rehacer y paso de fotograma.
-- **Archivos locales**: pestaña **Archivo local** o arrastrar y soltar un vídeo/audio en la ventana. FFprobe lee duración, resolución y códecs al instante, y el editor se abre directo en modo tramos. No se copia el archivo completo: el clip se corta con FFmpeg sin recodificar el vídeo (el audio pasa a AAC solo si no cabe en MP4), también en archivos de varios GB.
-- **Audio local**: extrae y corta la pista original (AAC→M4A, MP3→MP3, FLAC→FLAC…) sin recodificar.
-- **Vídeo**: MP4 de 360p a 2160p, con H.264/AAC preferente hasta 1080p. Al cargar un vídeo se preselecciona su máxima resolución disponible; la calidad se puede cambiar a mano.
+- **Archivos locales**: pestaña **Archivo local** o arrastrar y soltar un vídeo/audio en la ventana. FFprobe lee duración, resolución y códecs al instante, y el editor se abre directo en modo tramos. No se copia el archivo completo: el clip se corta con FFmpeg y, si el vídeo ya es H.264, se copia sin recodificar; si no, se convierte a H.264 para que abra en cualquier editor. El audio pasa a AAC solo si no lo es.
+- **Audio local**: extrae y corta la pista original (AAC→M4A, MP3→MP3, FLAC→FLAC…) sin recodificar; con «Preparar para edición», los códecs que un editor no abre (Opus, Vorbis, AC3, DTS, WMA…) pasan a AAC.
+- **Vídeo**: MP4 de 360p a 2160p. Al cargar un vídeo se preselecciona su máxima resolución disponible; la calidad se puede cambiar a mano. Hasta 1080p se descarga H.264/AAC nativo; a partir de 1440p se recodifica a H.264/AAC.
+- **Preparar para edición**: activado por defecto, garantiza H.264/AAC dentro de MP4 en todo lo que sale de la app (clips, descargas completas y recortes locales), el formato que abren Premiere, DaVinci y compañía. Se puede desactivar en Ajustes.
 - **Audio**: MP3 320/256/192/128, M4A 256/128, Opus 160, FLAC, WAV y audio original.
 - **Playlists y canales**: selector de vídeos con casillas y rangos.
 - **Cola con progreso**, cancelación, reintento, logs y «Limpiar completados».
@@ -64,6 +65,7 @@ El instalador queda en `src-tauri/target/release/bundle/nsis/`.
 ```text
 src/                  Interfaz React + TypeScript
 src-tauri/            Backend Rust y configuración de Tauri
+src-tauri/src/compat.rs  Verificación y conversión a H.264/AAC para editores
 src-tauri/src/engine.rs   Descarga, estado y actualización de yt-dlp/FFmpeg/Deno
 src-tauri/src/jobs.rs     Análisis, cola, recortes y ejecución de yt-dlp
 src-tauri/src/local.rs    Archivos locales: FFprobe, vista previa y corte con FFmpeg
@@ -83,17 +85,17 @@ Los ajustes, el historial y la disposición de la interfaz se guardan en `%LOCAL
 
 La app lanza `yt-dlp` como subproceso y lee eventos estructurados con `--progress-template` y `--print ...`. La única línea humana que interpreta es el aviso de archivo ya descargado («has already been downloaded»), para no dar por buena una descarga que no ocurrió.
 
-Los tramos se descargan con `--download-sections "*HH:MM:SS.mmm-HH:MM:SS.mmm"` (corte en keyframe, sin recodificar) y se guardan en una carpeta con el nombre del vídeo, con el rango como prefijo del archivo. La copia local del editor es solo un proxy de baja resolución (hasta 480p) para previsualizar: no se usa para el corte final, que mantiene la calidad elegida.
+Los tramos se descargan con `--download-sections "*HH:MM:SS.mmm-HH:MM:SS.mmm"` y se guardan en una carpeta con el nombre del vídeo, con el rango como prefijo del archivo. Hasta 1080p se exige H.264/AAC en la propia descarga. Con «Preparar para edición» activo, todo archivo descargado se revisa con FFprobe y, si no es H.264/AAC dentro de MP4 (`compat.rs`), se recodifica con FFmpeg: H.264 High, `yuv420p`, AAC 192k y `faststart`. Los HDR se pasan a SDR BT.709 con tonemap. La copia local del editor es solo un proxy de baja resolución (hasta 480p) para previsualizar: no se usa para el corte final, que mantiene la calidad elegida.
 
-En archivos locales, `local.rs` usa FFprobe para leer la cabecera y decide la vista previa en tres pasos: reproducir el original si es compatible, remuxar a MP4 si el contenedor no vale pero los códecs sí (solo hasta 4 GB), o generar un proxy 480p con progreso. El corte final usa `ffmpeg -ss … -t … -c copy -movflags +faststart`: no recodifica el vídeo y solo escribe el tramo pedido, así que un archivo de 20 GB no se copia entero. El audio se copia cuando cabe en MP4; si no (Opus, DTS, PCM…), se convierte a AAC dentro del mismo MP4. En códecs de vídeo que no caben en MP4 (VP9, ProRes…) se usa MKV con copia. Si el tramo existe, se guarda con ` (2)`, ` (3)`… sin sobrescribir.
+En archivos locales, `local.rs` usa FFprobe para leer la cabecera y decide la vista previa en tres pasos: reproducir el original si es compatible, remuxar a MP4 si el contenedor no vale pero los códecs sí (solo hasta 4 GB), o generar un proxy 480p con progreso. El corte final solo escribe el tramo pedido, así que un archivo de 20 GB no se copia entero. Con «Preparar para edición» activo, un origen H.264 de 8 bits se copia (`-c copy`) y cualquier otro códec (AV1, VP9, HEVC, H.264 de 10 bits) se recodifica a H.264/AAC; en ese caso el seek de entrada es exacto al fotograma. El audio se copia si ya es AAC y, si no (Opus, DTS, PCM…), se convierte a AAC dentro del mismo MP4. En los cortes de audio se conserva el códec si es AAC, MP3, FLAC, ALAC o PCM; el resto pasa a AAC (M4A). Si el tramo existe, se guarda con ` (2)`, ` (3)`… sin sobrescribir.
 
 ## Limitaciones conocidas
 
 - **Vista previa:** el modo avanzado descarga una copia local de baja resolución (hasta 480p) con audio para que el montaje se comporte como un archivo local (scrub instantáneo y teclado). Las copias se cachean y se limpian automáticamente; si no se pueden preparar, se usa el stream remoto de yt-dlp (normalmente 360p). En sitios con DRM o directos en vivo la vista previa puede no estar disponible; la línea de tiempo sigue funcionando con la duración conocida.
-- **Corte en keyframe:** al no recodificar el vídeo, el clip necesita el keyframe anterior. En MP4 ese pre-roll queda oculto con timestamps negativos y la reproducción empieza en el tiempo pedido; en MKV/WebM (solo para códecs que no caben en MP4) puede verse el trozo anterior. El audio sí se recodifica a AAC cuando el códec original no cabe en MP4.
+- **Corte en keyframe:** al copiar un origen H.264, el clip necesita el keyframe anterior. En MP4 ese pre-roll queda oculto con timestamps negativos y la reproducción empieza en el tiempo pedido. Cuando hay que recodificar (AV1, VP9, HEVC…), el corte sí es exacto.
 - **Archivos locales y códecs:** MP4/MOV/WebM con H.264, VP9 o AV1 se reproducen directamente. MKV y otros contenedores se remuxan a MP4 si los códecs lo permiten; si el códec no es compatible con WebView2 (HEVC sin extensión, ProRes, DNxHD…), se genera un proxy 480p, que tarda más y ocupa espacio en la caché.
-- **Audio local:** se conserva el códec original. AC3, DTS o WMA se pueden abrir en reproductores como VLC, pero no en todos los reproductores de Windows.
-- **Más de 1080p:** el sitio suele servir VP9/AV1 dentro del MP4; reproductores antiguos pueden no abrirlo.
+- **Audio local:** con «Preparar para edición» activo se conserva el códec si es AAC, MP3, FLAC, ALAC o PCM, y el resto (Opus, Vorbis, AC3, DTS, WMA…) pasa a AAC. Desactivado, se conserva el original; AC3, DTS o WMA pueden no abrirse en todos los reproductores ni editores.
+- **Más de 1080p:** el sitio suele servir VP9/AV1 dentro del MP4. Con «Preparar para edición» activo se descarga igualmente la máxima calidad y se recodifica a H.264 (tarda más y ocupa más); si se desactiva, el archivo conserva VP9/AV1 y Premiere puede rechazarlo.
 - **Bandeja de preparación:** no se guarda al cerrar la app. Los trabajos ya exportados sí quedan en el historial.
 - **Chrome/Edge en Windows:** yt-dlp no puede descifrar las cookies v20 (App-Bound Encryption) y el archivo está bloqueado con el navegador abierto. Usa Firefox o exporta `cookies.txt` con una extensión.
 - **Sin firma de código:** el instalador y los binarios no están firmados. Windows SmartScreen puede mostrar advertencias.

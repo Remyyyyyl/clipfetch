@@ -101,6 +101,11 @@ interface JobLogPayload {
   line: string;
 }
 
+interface JobPostProcessPayload {
+  jobId: string;
+  percent: number | null;
+}
+
 function describePreviewProgress(
   payload: PreviewProgress,
   percent: number | null,
@@ -353,6 +358,7 @@ function App() {
                     status: "completed",
                     percent: 100,
                     filePercent: 100,
+                    converting: false,
                     filesDone: job.filesTotal ?? job.filesDone,
                     speed: null,
                     eta: null,
@@ -373,9 +379,37 @@ function App() {
           setJobs((previous) =>
             previous.map((job) =>
               job.id === payload.jobId
-                ? { ...job, status: "error", error: payload.message, speed: null, eta: null }
+                ? { ...job, status: "error", error: payload.message, speed: null, eta: null, converting: false }
                 : job,
             ),
+          );
+        }),
+      );
+
+      unlisteners.push(
+        await listen<JobPostProcessPayload>("job://postprocess", (event) => {
+          const { jobId, percent } = event.payload;
+          setJobs((previous) =>
+            previous.map((job) => {
+              if (
+                job.id !== jobId ||
+                job.status === "cancelled" ||
+                job.status === "completed" ||
+                job.status === "error"
+              ) {
+                return job;
+              }
+              const next =
+                percent === null || !Number.isFinite(percent)
+                  ? job.convertPercent
+                  : Math.round(Math.max(0, Math.min(100, percent)));
+              return {
+                ...job,
+                status: "downloading",
+                converting: true,
+                convertPercent: next,
+              };
+            }),
           );
         }),
       );
@@ -387,7 +421,7 @@ function App() {
           setJobs((previous) =>
             previous.map((job) =>
               job.id === event.payload.jobId
-                ? { ...job, status: "cancelled", speed: null, eta: null }
+                ? { ...job, status: "cancelled", speed: null, eta: null, converting: false }
                 : job,
             ),
           );
@@ -503,6 +537,7 @@ function App() {
             clipStart: next.request.clipStart ?? 0,
             clipEnd: next.request.clipEnd ?? 0,
             precise: next.request.precise,
+            editorReady: next.request.editorReady,
           },
         })
       : invoke<string>("start_download", { req: next.request });
@@ -1201,6 +1236,7 @@ function App() {
       clipStart: item.clip?.start ?? null,
       clipEnd: item.clip?.end ?? null,
       precise: item.precise,
+      editorReady: conf.editorReady,
     };
 
     return {
@@ -1279,7 +1315,7 @@ function App() {
     setJobs((previous) =>
       previous.map((item) =>
         item.id === job.id
-          ? { ...item, status: "cancelled", speed: null, eta: null }
+          ? { ...item, status: "cancelled", speed: null, eta: null, converting: false }
           : item,
       ),
     );
@@ -1307,6 +1343,8 @@ function App() {
               filePercent: 0,
               entryIndex: 1,
               stage: undefined,
+              converting: false,
+              convertPercent: 0,
             }
           : item,
       ),
@@ -1700,6 +1738,7 @@ function App() {
               preset={preset}
               presetOptions={presets}
               onPresetChange={changePreset}
+              editorReady={settings.editorReady}
               outputDir={settings.outputDir}
               onOutputDirChange={(value) => updateSettings({ outputDir: value })}
               onPickFolder={pickFolder}

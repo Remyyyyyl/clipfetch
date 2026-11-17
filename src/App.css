@@ -1659,6 +1659,37 @@ textarea {
   gap: 10px;
 }
 
+.toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 12px;
+  cursor: pointer;
+}
+
+.toggle-row input[type="checkbox"] {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin: 1px 0 0;
+  accent-color: var(--amber);
+  cursor: pointer;
+}
+
+.toggle-row strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.toggle-row small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
 .note {
   margin-top: 10px;
   padding-left: 9px;
@@ -2412,6 +2443,12 @@ textarea {
 .rail-job-meta .status-dot {
   width: 4px;
   height: 4px;
+}
+
+.rail-job.converting .status-dot {
+  background: var(--amber);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--amber) 55%, transparent);
+  animation: pulse 1s ease-in-out infinite;
 }
 
 .rail-tape {

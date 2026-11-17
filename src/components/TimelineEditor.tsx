@@ -19,6 +19,7 @@ import {
   isEditableTarget,
   type SnapCandidate,
 } from "../lib/timeline";
+import { EditTools } from "./EditTools";
 import { Icon } from "./Icon";
 
 export type EditorTool = "select" | "cut" | "hand" | "zoom";
@@ -26,6 +27,8 @@ export type EditorTool = "select" | "cut" | "hand" | "zoom";
 export interface EditorHandle {
   cutAtPlayhead: () => void;
   deleteSelectedClips: () => void;
+  markIn: () => void;
+  markOut: () => void;
   deleteClip: (id: string) => void;
   selectClip: (id: string, mode?: "replace" | "toggle" | "range") => void;
   selectAllClips: () => void;
@@ -1378,6 +1381,8 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
   useImperativeHandle(ref, () => ({
     cutAtPlayhead: () => cutAtTime(current),
     deleteSelectedClips,
+    markIn: markStart,
+    markOut: markEnd,
     deleteClip,
     selectClip,
     selectAllClips,
@@ -1761,16 +1766,23 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
         </button>
       </div>
 
-      <div
-        ref={trackRef}
-        className={`tl-track${dragging ? " is-dragging" : ""}${snapTarget ? " has-snap" : ""}`}
-        onPointerDown={onTrackPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={finishDrag}
-        onPointerCancel={() => finishDrag()}
-        onPointerLeave={onTrackPointerLeave}
-        role="presentation"
-      >
+      <div className="tl-edit-row">
+        <EditTools
+          tool={tool}
+          onToolChange={setTool}
+          snap={snap}
+          onToggleSnap={() => setSnap((value) => !value)}
+        />
+        <div
+          ref={trackRef}
+          className={`tl-track${dragging ? " is-dragging" : ""}${snapTarget ? " has-snap" : ""}`}
+          onPointerDown={onTrackPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={finishDrag}
+          onPointerCancel={() => finishDrag()}
+          onPointerLeave={onTrackPointerLeave}
+          role="presentation"
+        >
         <div className="tl-track-view">
           <div className="tl-ruler" aria-hidden="true">
           {rulerTicks.map((tick) => {
@@ -1888,6 +1900,7 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
             onKeyDown={onHandleKey("end")}
           />
         )}
+        </div>
       </div>
 
       <div className="tl-foot">

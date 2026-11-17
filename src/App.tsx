@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { open } from "@tauri-apps/plugin-dialog";
+import { confirm as confirmDialog, open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "@fontsource-variable/bricolage-grotesque";
 import "@fontsource/ibm-plex-mono/latin-400.css";
 import "@fontsource/ibm-plex-mono/latin-500.css";
@@ -48,14 +49,16 @@ import {
   resolutionLabel,
 } from "./lib/local";
 import { LogBuffer } from "./lib/logBuffer";
+import { ClipsPanel } from "./components/ClipsPanel";
+import { ControlPanel } from "./components/ControlPanel";
 import { Icon } from "./components/Icon";
+import { MediaBrowser } from "./components/MediaBrowser";
+import { MenuBar } from "./components/MenuBar";
 import { Notice } from "./components/Notice";
-import type { EditorHandle } from "./components/TimelineEditor";
-import { QueueRail } from "./components/QueueRail";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { SetupScreen } from "./components/SetupScreen";
-import { ToolWorkspace } from "./components/ToolWorkspace";
-import { TopBar } from "./components/TopBar";
+import { Workspace } from "./components/Workspace";
+import type { EditorHandle } from "./components/TimelineEditor";
 
 const MAX_LOG_LINES = 400;
 const ALREADY_DOWNLOADED = /\[download\]\s+(.+?)\s+has already been downloaded/i;
@@ -141,6 +144,8 @@ function App() {
   const [globalInfo, setGlobalInfo] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyReady, setHistoryReady] = useState(false);
+  const [clipsVisible, setClipsVisible] = useState(true);
+  const [mediaVisible, setMediaVisible] = useState(true);
 
   const startingRef = useRef<Set<string>>(new Set());
   const previewTicketRef = useRef(0);
@@ -152,24 +157,33 @@ function App() {
   const logBufferRef = useRef<LogBuffer | null>(null);
 
   const editorRef = useRef<EditorHandle | null>(null);
-  const clipSnapshotRef = useRef<Clip[]>([]);
-  const clipSelectionRef = useRef<string[]>([]);
-  const historyStateRef = useRef({ canUndo: false, canRedo: false });
+  const [clipSnapshot, setClipSnapshot] = useState<Clip[]>([]);
+  const [clipSelection, setClipSelection] = useState<string[]>([]);
+  const [editorHistory, setEditorHistory] = useState({
+    canUndo: false,
+    canRedo: false,
+  });
 
   const handleClipsChange = useCallback((next: Clip[]) => {
-    clipSnapshotRef.current = next;
+    setClipSnapshot(next);
   }, []);
 
   const handleClipSelectionChange = useCallback((ids: string[]) => {
-    clipSelectionRef.current = ids;
+    setClipSelection(ids);
   }, []);
 
   const handleHistoryChange = useCallback(
     (state: { canUndo: boolean; canRedo: boolean }) => {
-      historyStateRef.current = state;
+      setEditorHistory(state);
     },
     [],
   );
+
+  useEffect(() => {
+    setClipSnapshot([]);
+    setClipSelection([]);
+    setEditorHistory({ canUndo: false, canRedo: false });
+  }, [source]);
 
   if (logBufferRef.current === null) {
     logBufferRef.current = new LogBuffer((batch) => {
@@ -792,6 +806,25 @@ function App() {
     setMode(next === "file" ? "advanced" : "simple");
   };
 
+  const confirmDiscardClips = async () => {
+    if (clipSnapshot.length === 0) return true;
+    try {
+      return await confirmDialog(
+        "Se descartarán los tramos del editor. ¿Quieres continuar?",
+        { title: "Cambiar de fuente", kind: "warning" },
+      );
+    } catch {
+      return true;
+    }
+  };
+
+  const changeSource = async (next: SourceKind) => {
+    if (next === source) return true;
+    if (!(await confirmDiscardClips())) return false;
+    switchSource(next);
+    return true;
+  };
+
   const changeTool = (next: ToolKind) => {
     if (next === tool) return;
     analyzeTicketRef.current += 1;
@@ -828,6 +861,14 @@ function App() {
 
   const selectAll = () => setSelection(new Set(positions));
   const selectNone = () => setSelection(new Set());
+  const selectInvert = () =>
+    setSelection((previous) => {
+      const next = new Set<number>();
+      for (const position of positions) {
+        if (!previous.has(position)) next.add(position);
+      }
+      return next;
+    });
   const selectRange = (from: number, to: number) => {
     const low = Math.min(from, to);
     const high = Math.max(from, to);
@@ -1205,10 +1246,54 @@ function App() {
     (job) => job.status === "starting" || job.status === "downloading",
   ).length;
 
+  const exitApp = async () => {
+    if (activeCount > 0) {
+      let confirmed = false;
+      try {
+        confirmed = await confirmDialog(
+          "Hay descargas en curso. ¿Cerrar ClipFetch de todos modos?",
+          { title: "Salir de ClipFetch", kind: "warning" },
+        );
+      } catch {
+        confirmed = true;
+      }
+      if (!confirmed) return;
+    }
+    await getCurrentWindow().close();
+  };
+
+  const openLocalFromMenu = async () => {
+    if (!(await changeSource("file"))) return;
+    await pickLocalFile();
+  };
+
+  const analyzeFromMenu = async () => {
+    if (!(await changeSource("url"))) return;
+    if (url.trim()) await analyze();
+  };
+
+  const selectClipsAll = () => editorRef.current?.selectAllClips();
+  const selectClipsNone = () => editorRef.current?.clearClipSelection();
+  const selectClipsInvert = () => editorRef.current?.invertClipSelection();
+  const selectClipFromPanel = (id: string) => editorRef.current?.selectClip(id);
+  const deleteClipFromPanel = (id: string) => editorRef.current?.deleteClip(id);
+
+  const resetLayout = () => {
+    setClipsVisible(true);
+    setMediaVisible(true);
+  };
+
   const canAdvanced =
     source === "file"
       ? Boolean(local && (local.duration ?? 0) > 1)
       : Boolean(info && info._type !== "playlist" && (info.duration ?? 0) > 1);
+
+  useEffect(() => {
+    if (canAdvanced) return;
+    setClipSnapshot([]);
+    setClipSelection([]);
+    setEditorHistory({ canUndo: false, canRedo: false });
+  }, [canAdvanced]);
 
   const previewRetry = () => {
     if (source === "file") {
@@ -1338,11 +1423,16 @@ function App() {
     return <BootScreen error={bootError} onRetry={loadApp} />;
   }
 
+  const hasCompleted = jobs.some((job) => job.status === "completed");
+  const queueCount = staged.length + jobs.length;
+
   return (
-    <div className="app-shell">
-      <TopBar
-        tool={tool}
-        onToolChange={changeTool}
+    <div
+      className={`app-shell${clipsVisible ? "" : " is-clips-hidden"}${
+        mediaVisible ? "" : " is-media-hidden"
+      }`}
+    >
+      <MenuBar
         engine={engine}
         engineBusy={engineBusy}
         enginePercent={enginePercent}
@@ -1350,97 +1440,156 @@ function App() {
         engineUpdate={engineUpdate}
         onUpdateEngine={() => void runEngineTask("update_ytdlp")}
         onOpenSettings={() => setSettingsOpen(true)}
+        canUndo={editorHistory.canUndo}
+        canRedo={editorHistory.canRedo}
+        onUndo={() => editorRef.current?.undo()}
+        onRedo={() => editorRef.current?.redo()}
+        canCut={clipSnapshot.length > 0}
+        onCut={() => editorRef.current?.cutAtPlayhead()}
+        canDelete={clipSelection.length > 0}
+        onDelete={() => editorRef.current?.deleteSelectedClips()}
+        onMarkIn={() => editorRef.current?.markIn()}
+        onMarkOut={() => editorRef.current?.markOut()}
+        playlistAvailable={Boolean(isPlaylist)}
+        onPlaylistAll={selectAll}
+        onPlaylistNone={selectNone}
+        onPlaylistInvert={selectInvert}
+        clipsAvailable={clipSnapshot.length > 0}
+        onClipsAll={selectClipsAll}
+        onClipsNone={selectClipsNone}
+        onClipsInvert={selectClipsInvert}
+        clipsVisible={clipsVisible}
+        mediaVisible={mediaVisible}
+        onToggleClips={() => setClipsVisible((value) => !value)}
+        onToggleMedia={() => setMediaVisible((value) => !value)}
+        onFit={() => editorRef.current?.fitView()}
+        onResetLayout={resetLayout}
+        onOpenLocal={() => void openLocalFromMenu()}
+        onAnalyze={() => void analyzeFromMenu()}
+        onExport={exportQueue}
+        stagedCount={staged.length}
+        hasCompleted={hasCompleted}
+        onClearCompleted={clearCompleted}
+        onExit={() => void exitApp()}
+        queueCount={queueCount}
+        jobs={jobs}
       />
 
-      <div className="app-body">
-        <QueueRail
-          staged={staged}
-          jobs={jobs}
-          activeCount={activeCount}
-          onRemoveStaged={removeStaged}
-          onMoveStaged={moveStaged}
-          onReorderStaged={reorderStaged}
-          onExport={exportQueue}
-          onCancel={cancelJob}
-          onRetry={retryJob}
-          onOpenFolder={openFolder}
-          onRevealFile={revealFile}
-          onClearCompleted={clearCompleted}
-        />
+      {engine.installed ? (
+        <>
+          <ControlPanel
+            tool={tool}
+            onToolChange={changeTool}
+            mode={mode}
+            onModeChange={setMode}
+            canAdvanced={canAdvanced}
+            source={source}
+            onSourceChange={(next) => void changeSource(next)}
+            url={url}
+            onUrlChange={setUrl}
+            analyzing={analyzing}
+            elapsed={elapsed}
+            onAnalyze={() => void analyze()}
+            info={info}
+            local={local}
+            localPicking={localPicking}
+            onPickLocal={() => void pickLocalFile()}
+            analysisError={analysisError}
+            onClearAnalysisError={() => setAnalysisError("")}
+            preset={preset}
+            presetOptions={presets}
+            onPresetChange={changePreset}
+            outputDir={settings.outputDir}
+            onOutputDirChange={(value) => updateSettings({ outputDir: value })}
+            onPickFolder={pickFolder}
+            onStage={stageSimple}
+            stageDisabled={Boolean(isPlaylist) && selection.size === 0}
+          />
 
-        <main className="canvas">
-          {globalError && (
-            <Notice onClose={() => setGlobalError("")}>{globalError}</Notice>
-          )}
-          {globalInfo && (
-            <Notice kind="info" onClose={() => setGlobalInfo("")}>
-              {globalInfo}
-            </Notice>
-          )}
-          {engineError && (
-            <Notice
-              kind="error"
-              title="No se pudo actualizar yt-dlp"
-              onClose={() => setEngineError("")}
-            >
-              {engineError}
-            </Notice>
-          )}
+          <Workspace
+            tool={tool}
+            mode={mode}
+            canAdvanced={canAdvanced}
+            source={source}
+            info={info}
+            local={local}
+            analyzing={analyzing}
+            elapsed={elapsed}
+            preview={preview}
+            preset={preset}
+            isPlaylist={Boolean(isPlaylist)}
+            selection={selection}
+            positions={positions}
+            onToggleItem={toggleItem}
+            onSelectAll={selectAll}
+            onSelectNone={selectNone}
+            onSelectRange={selectRange}
+            onRetryPreview={previewRetry}
+            onCancelPreview={() => cancelPreview(true)}
+            onAddClips={stageClips}
+            editorRef={editorRef}
+            onClipsChange={handleClipsChange}
+            onClipSelectionChange={handleClipSelectionChange}
+            onHistoryChange={handleHistoryChange}
+          >
+            {globalError && (
+              <Notice onClose={() => setGlobalError("")}>{globalError}</Notice>
+            )}
+            {globalInfo && (
+              <Notice kind="info" onClose={() => setGlobalInfo("")}>
+                {globalInfo}
+              </Notice>
+            )}
+            {engineError && (
+              <Notice
+                kind="error"
+                title="No se pudo actualizar yt-dlp"
+                onClose={() => setEngineError("")}
+              >
+                {engineError}
+              </Notice>
+            )}
+          </Workspace>
 
-          {engine.installed ? (
-            <ToolWorkspace
-              tool={tool}
-              mode={mode}
-              onModeChange={setMode}
-              canAdvanced={canAdvanced}
-              source={source}
-              onSourceChange={switchSource}
-              url={url}
-              onUrlChange={setUrl}
-              analyzing={analyzing}
-              elapsed={elapsed}
-              onAnalyze={() => void analyze()}
-              info={info}
-              local={local}
-              localPicking={localPicking}
-              onPickLocal={() => void pickLocalFile()}
-              analysisError={analysisError}
-              onClearAnalysisError={() => setAnalysisError("")}
-              preview={preview}
-              onRetryPreview={previewRetry}
-              onCancelPreview={() => cancelPreview(true)}
-              preset={preset}
-              presetOptions={presets}
-              onPresetChange={changePreset}
-              outputDir={settings.outputDir}
-              onOutputDirChange={(value) => updateSettings({ outputDir: value })}
-              onPickFolder={pickFolder}
-              onStage={stageSimple}
-              isPlaylist={Boolean(isPlaylist)}
-              selection={selection}
-              positions={positions}
-              onToggleItem={toggleItem}
-              onSelectAll={selectAll}
-              onSelectNone={selectNone}
-              onSelectRange={selectRange}
-              onAddClips={stageClips}
-              editorRef={editorRef}
-              onClipsChange={handleClipsChange}
-              onClipSelectionChange={handleClipSelectionChange}
-              onHistoryChange={handleHistoryChange}
-            />
-          ) : (
-            <SetupScreen
-              engine={engine}
-              busy={engineBusy}
-              percent={enginePercent}
-              stage={engineStage}
-              error={engineError}
-              onInstall={() => void runEngineTask("install_engine")}
-            />
-          )}
-        </main>
-      </div>
+          <MediaBrowser root={settings.outputDir} />
+
+          <ClipsPanel
+            clips={clipSnapshot}
+            clipSelection={clipSelection}
+            simple={mode === "simple"}
+            staged={staged}
+            jobs={jobs}
+            activeCount={activeCount}
+            onSelectClip={selectClipFromPanel}
+            onDeleteClip={deleteClipFromPanel}
+            onRemoveStaged={removeStaged}
+            onMoveStaged={moveStaged}
+            onReorderStaged={reorderStaged}
+            onExport={exportQueue}
+            onCancel={cancelJob}
+            onRetry={retryJob}
+            onOpenFolder={openFolder}
+            onRevealFile={revealFile}
+            onClearCompleted={clearCompleted}
+          />
+        </>
+      ) : (
+        <section
+          className="workspace setup-workspace"
+          id="tool-panel"
+          role="tabpanel"
+          aria-labelledby={`tool-${tool}`}
+        >
+          <SetupScreen
+            engine={engine}
+            busy={engineBusy}
+            percent={enginePercent}
+            stage={engineStage}
+            error={engineError}
+            onInstall={() => void runEngineTask("install_engine")}
+          />
+        </section>
+      )}
 
       {dragActive && (
         <div className="drop-overlay" aria-hidden="true">

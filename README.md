@@ -4,7 +4,7 @@ Interfaz de escritorio sencilla para [yt-dlp](https://github.com/yt-dlp/yt-dlp) 
 
 ## Descargar e instalar
 
-1. Entra en [Releases](https://github.com/Remyyyyyl/clipfetch/releases/latest) y descarga `ClipFetch_1.1.0_x64-setup.exe`.
+1. Entra en [Releases](https://github.com/Remyyyyyl/clipfetch/releases/latest) y descarga el instalador más reciente (`ClipFetch_1.1.0_x64-setup.exe` en la 1.1).
 2. Ejecuta el instalador. Se instala por usuario y no pide permisos de administrador.
 3. Abre ClipFetch y pulsa **Instalar motor**. La app descarga yt-dlp, FFmpeg y Deno (~250 MB de descarga; ~450 MB en disco).
 4. Pega una URL, elige la calidad y la carpeta, y pulsa **Descargar**. Para recortar un archivo del disco, cambia a **Archivo local** y ábrelo (o suéltalo en la ventana).
@@ -15,11 +15,7 @@ Interfaz de escritorio sencilla para [yt-dlp](https://github.com/yt-dlp/yt-dlp) 
 
 **Desinstalar:** Configuración → Aplicaciones → ClipFetch. Los archivos descargados se conservan.
 
-SHA-256 del instalador 1.1.0:
-
-```text
-Pendiente de la compilación de la versión 1.1.0.
-```
+SHA-256: cada release publica el hash del instalador en su página de GitHub.
 
 > Estado: versión 1.1 con recorte de archivos locales junto a la mesa de corte de YouTube. Siguiente fase: firma de código, verificación de checksums y actualizador.
 

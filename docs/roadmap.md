@@ -96,7 +96,7 @@ Pendiente de probar antes de publicar:
 - Un MP4 H.264 grande (>4 GB), un MKV H.264, un MKV HEVC y un audio FLAC/WAV.
 - Cancelar a mitad de corte y comprobar que no queda archivo parcial.
 - Confirmar que el arrastre del raíl sigue funcionando con el drag & drop nativo.
-- Generar el instalador y actualizar el SHA-256 del README.
+- Generar el instalador, publicar la release y anotar su SHA-256.
 
 
 ## Sprint 1 (hecho)

@@ -4476,6 +4476,23 @@ textarea {
   list-style: none;
 }
 
+.media-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.media-item .media-row {
+  flex: 1;
+  width: auto;
+}
+
+.media-prepare {
+  flex: none;
+  padding: 2px 6px;
+  font-size: 9.5px;
+}
+
 .media-row {
   display: flex;
   align-items: center;

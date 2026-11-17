@@ -221,3 +221,21 @@ Decisiones tomadas con el usuario:
   conversión se puede cancelar desde el mismo botón que la descarga.
 - **Pendiente**: si se elige 2160p, la conversión 4K tarda del orden del clip y
   ocupa bastante. Valorar ProRes 422 o codificación por hardware como opción.
+
+## F1 · Copia de edición 1080p (hecho)
+
+- Motivo: un MP4 H.264 4K válido seguía fallando en Premiere 24 con «tipo de
+  compresión no admitido». El códec era correcto; el problema es el importador
+  de H.264 4K y, en algunos casos, la caché o el nombre del archivo.
+- La descarga se mantiene en la **máxima calidad** y se guarda como **máster**.
+- `compat.rs` crea una **copia de edición** aparte con nombre limpio. Perfil por
+  defecto: 1080p H.264 High@4.2, CRF 18, `yuv420p`, AAC 192k 48 kHz estéreo y
+  `faststart`. Perfiles alternativos: ProRes 422 4K (PCM 48k) y H.264 a la
+  resolución original (experimental en Premiere).
+- Ajuste **Copia para edición** y **Conservar máster** en Ajustes.
+- El navegador de medios tiene un botón **Editar** para reparar un archivo ya
+  descargado sin volver a bajarlo. Nunca borra el original.
+- La validación posterior comprueba códec, perfil, `pix_fmt`, resolución y audio.
+- Se conserva el edit list del máster para no alargar el clip: probado con un
+  clip 4K de 9,55 s → 1080p H.264 de 9,55 s, AAC 48 kHz estéreo.
+- **Pendiente**: probar la importación real en Premiere 24 con el nuevo perfil.

@@ -1,4 +1,4 @@
-use crate::compat;
+use crate::compat::{self, EditorProfile};
 use crate::engine;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -36,7 +36,14 @@ pub struct DownloadRequest {
     pub clip_end: Option<f64>,
     #[serde(default)]
     pub precise: bool,
-    /// Deja el archivo en H.264/AAC (compatible con Premiere y otros editores).
+    /// Perfil de la copia para editores: premiere-1080, premiere-4k, prores-4k
+    /// u original. Si falta, se usa `editorReady` (compatibilidad con la 1.3).
+    #[serde(default)]
+    pub editor_profile: Option<String>,
+    /// Conservar el máster descargado junto a la copia de edición.
+    #[serde(default = "default_true")]
+    pub keep_master: bool,
+    /// Campo antiguo de la 1.3.
     #[serde(default = "default_true")]
     pub editor_ready: bool,
 }
@@ -502,7 +509,8 @@ pub async fn start_download(
     let job_id = req.job_id.clone();
     let output_dir = req.output_dir.clone();
     let title = req.title.clone().unwrap_or_default();
-    let editor_ready = req.editor_ready;
+    let profile = EditorProfile::from_request(req.editor_profile.as_deref(), req.editor_ready);
+    let keep_master = req.keep_master;
     let children = state.children.clone();
     let cancelled = state.cancelled.clone();
     let app_handle = app.clone();
@@ -544,9 +552,10 @@ pub async fn start_download(
 
         match status {
             Ok(status) if status.success() => {
-                let mut final_path = filepaths.last().cloned();
+                let mut final_edit = filepaths.last().cloned();
+                let mut final_master: Option<String> = None;
 
-                if editor_ready {
+                if !profile.is_original() {
                     for path in &filepaths {
                         let already_cancelled = cancelled
                             .lock()
@@ -561,17 +570,21 @@ pub async fn start_download(
                             return;
                         }
 
-                        match compat::ensure_editor_ready(
+                        match compat::prepare_for_editor(
                             &app_handle,
                             &job_id,
                             &children,
                             &cancelled,
                             Path::new(path),
+                            profile,
+                            keep_master,
                         )
                         .await
                         {
-                            Ok(ready) => {
-                                final_path = Some(ready.to_string_lossy().to_string());
+                            Ok(output) => {
+                                final_edit = Some(output.edit.to_string_lossy().to_string());
+                                final_master =
+                                    output.master.map(|path| path.to_string_lossy().to_string());
                             }
                             Err(compat::EnsureError::Cancelled) => {
                                 let _ = app_handle.emit(
@@ -608,7 +621,8 @@ pub async fn start_download(
                     "job://done",
                     serde_json::json!({
                         "jobId": job_id,
-                        "filepath": final_path,
+                        "filepath": final_edit,
+                        "masterPath": final_master,
                         "outputDir": output_dir,
                         "title": title,
                     }),

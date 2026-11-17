@@ -1,4 +1,5 @@
-import type { LocalMedia, SourceKind, ToolKind, YtDlpInfo } from "../types";
+import type { EditorProfileId, LocalMedia, SourceKind, ToolKind, YtDlpInfo } from "../types";
+import { editorProfileLabel } from "../lib/format";
 import { Icon } from "./Icon";
 import { Notice } from "./Notice";
 
@@ -29,7 +30,8 @@ interface ControlPanelProps {
   preset: string;
   presetOptions: PresetOption[];
   onPresetChange: (value: string) => void;
-  editorReady: boolean;
+  editorProfile: EditorProfileId;
+  keepMaster: boolean;
   outputDir: string;
   onOutputDirChange: (value: string) => void;
   onPickFolder: () => void;
@@ -59,7 +61,8 @@ export function ControlPanel({
   preset,
   presetOptions,
   onPresetChange,
-  editorReady,
+  editorProfile,
+  keepMaster,
   outputDir,
   onOutputDirChange,
   onPickFolder,
@@ -198,11 +201,11 @@ export function ControlPanel({
 
             {tool === "video" && (
               <p className="hint">
-                {!editorReady
-                  ? "Se guarda el códec original. Premiere puede no abrirlo."
-                  : Number(preset) > 1080
-                    ? "Se descarga en la máxima calidad y se convierte a H.264 (tarda más)."
-                    : "H.264/AAC directo, sin recodificar."}
+                {editorProfile === "original"
+                  ? "Se guarda el archivo original; Premiere puede no abrirlo."
+                  : `Se descarga en la máxima calidad y se crea una copia ${editorProfileLabel(editorProfile)}${
+                      keepMaster ? ", conservando el máster" : ""
+                    }.`}
               </p>
             )}
           </>
@@ -221,10 +224,10 @@ export function ControlPanel({
               También puedes soltar un vídeo o audio en la ventana. No se copia el archivo
               completo: solo se leen sus datos y se corta lo que pidas.
             </p>
-            {local && tool === "video" && editorReady && local.videoCodec !== "h264" && (
+            {local && tool === "video" && editorProfile !== "original" && (
               <p className="hint">
-                El archivo es {local.videoCodec?.toUpperCase() ?? "de otro códec"} y se
-                recodificará a H.264 al recortarlo.
+                Se creará una copia {editorProfileLabel(editorProfile)}; el archivo original
+                no se modifica.
               </p>
             )}
           </div>

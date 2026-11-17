@@ -28,3 +28,6 @@ dist-ssr
 .env.*
 *.pem
 *.key
+
+# Medios de prueba locales
+media/

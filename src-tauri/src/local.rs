@@ -1,4 +1,4 @@
-use crate::compat;
+use crate::compat::{self, EditorProfile};
 use crate::engine;
 use crate::jobs::{clip_label, format_clock, hide_console_tokio, taskkill, AppState};
 use serde::{Deserialize, Serialize};
@@ -100,7 +100,13 @@ pub struct LocalCutRequest {
     pub clip_end: f64,
     #[serde(default)]
     pub precise: bool,
-    /// Deja el clip en H.264/AAC (compatible con Premiere y otros editores).
+    /// Perfil de la copia para editores.
+    #[serde(default)]
+    pub editor_profile: Option<String>,
+    /// Se acepta por compatibilidad; en cortes locales el original nunca se borra.
+    #[serde(default = "default_true")]
+    pub keep_master: bool,
+    /// Campo antiguo de la 1.3.
     #[serde(default = "default_true")]
     pub editor_ready: bool,
 }
@@ -1200,6 +1206,7 @@ pub async fn start_local_cut(
     }
 
     let container = lower_extension(&input);
+    let profile = EditorProfile::from_request(req.editor_profile.as_deref(), req.editor_ready);
     let extension = if kind == "audio" {
         if req.editor_ready
             && !audio_editor_ready(probe.audio_codec.as_deref().unwrap_or(""))
@@ -1208,16 +1215,29 @@ pub async fn start_local_cut(
         } else {
             cut_audio_extension(&probe)
         }
-    } else if req.editor_ready {
-        "mp4"
     } else {
-        raw_cut_extension(&probe, &container)
+        match profile {
+            EditorProfile::Original => raw_cut_extension(&probe, &container),
+            EditorProfile::ProRes4k => "mov",
+            _ => "mp4",
+        }
     };
     let audio_recode = kind == "audio"
         && req.editor_ready
         && !audio_editor_ready(probe.audio_codec.as_deref().unwrap_or(""));
+    let scale = if kind != "audio" && profile == EditorProfile::Premiere1080 {
+        compat::scale_to_1080(probe.width, probe.height)
+    } else {
+        None
+    };
     let recode_video = kind != "audio"
-        && (req.precise || (req.editor_ready && !video_editor_ready(&probe)));
+        && (req.precise
+            || match profile {
+                EditorProfile::Original => false,
+                EditorProfile::Premiere1080 => !video_editor_ready(&probe) || scale.is_some(),
+                EditorProfile::Premiere4k => !video_editor_ready(&probe),
+                EditorProfile::ProRes4k => true,
+            });
     let start = req.clip_start;
     let mut end = req.clip_end;
     if probe.duration > 1.0 {
@@ -1238,7 +1258,7 @@ pub async fn start_local_cut(
     } else {
         req.title.trim().to_string()
     };
-    let safe_title = sanitize_name(&title);
+    let safe_title = compat::clean_stem(&sanitize_name(&title));
     let folder = Path::new(req.output_dir.trim()).join(&safe_title);
     tokio::fs::create_dir_all(&folder)
         .await
@@ -1271,12 +1291,24 @@ pub async fn start_local_cut(
             "-vn".into(),
         ]);
         if audio_recode {
-            args.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "256k".into()]);
+            args.extend([
+                "-c:a".into(),
+                "aac".into(),
+                "-b:a".into(),
+                "256k".into(),
+                "-ar".into(),
+                "48000".into(),
+                "-ac".into(),
+                "2".into(),
+            ]);
         } else {
             args.extend(["-c:a".into(), "copy".into()]);
         }
         if extension == "m4a" {
-            args.extend(["-movflags".into(), "+faststart".into()]);
+            args.extend([
+                "-movflags".into(),
+                "+faststart".into(),
+            ]);
         }
     } else {
         let audio_copy = probe.audio_codec.as_deref() == Some("aac");
@@ -1314,42 +1346,58 @@ pub async fn start_local_cut(
         }
 
         if recode {
-            if req.editor_ready && is_hdr(&probe) {
-                args.extend(["-vf".into(), compat::TONEMAP_FILTER.into()]);
+            let mut filters: Vec<String> = Vec::new();
+            if !profile.is_original() && is_hdr(&probe) {
+                filters.push(compat::TONEMAP_FILTER.to_string());
             }
-            args.extend([
-                "-c:v".into(),
-                "libx264".into(),
-                "-preset".into(),
-                "veryfast".into(),
-                "-crf".into(),
-                if req.precise { "18" } else { "20" }.into(),
-                "-profile:v".into(),
-                "high".into(),
-                "-pix_fmt".into(),
-                "yuv420p".into(),
-            ]);
+            if let Some(scale) = &scale {
+                filters.push(scale.clone());
+            }
+            if !filters.is_empty() {
+                args.extend(["-vf".into(), filters.join(",")]);
+            }
+            if profile.is_original() {
+                args.extend([
+                    "-c:v".into(),
+                    "libx264".into(),
+                    "-preset".into(),
+                    "veryfast".into(),
+                    "-crf".into(),
+                    "18".into(),
+                    "-profile:v".into(),
+                    "high".into(),
+                    "-pix_fmt".into(),
+                    "yuv420p".into(),
+                ]);
+            } else {
+                args.extend(compat::video_encode_args(profile));
+            }
         } else {
             args.extend(["-c:v".into(), "copy".into()]);
         }
 
         if probe.has_audio {
-            if audio_copy {
-                args.extend(["-c:a".into(), "copy".into()]);
+            if profile.is_original() {
+                if audio_copy {
+                    args.extend(["-c:a".into(), "copy".into()]);
+                } else {
+                    args.extend([
+                        "-c:a".into(),
+                        "aac".into(),
+                        "-b:a".into(),
+                        "192k".into(),
+                    ]);
+                }
             } else {
-                // El vídeo puede copiarse; el audio se pasa a AAC para que
-                // cualquier editor lo abra sin problemas.
-                args.extend([
-                    "-c:a".into(),
-                    "aac".into(),
-                    "-b:a".into(),
-                    "192k".into(),
-                ]);
+                args.extend(compat::audio_encode_args(profile));
             }
         }
 
-        if extension == "mp4" {
-            args.extend(["-movflags".into(), "+faststart".into()]);
+        if extension == "mp4" || extension == "mov" {
+            args.extend([
+                "-movflags".into(),
+                "+faststart".into(),
+            ]);
         }
     }
     args.extend([
@@ -1413,7 +1461,7 @@ pub async fn start_local_cut(
             if req.precise {
                 "recodificando para corte exacto"
             } else if recode_video {
-                "recodificando a H.264 para edición"
+                "recodificando para edición"
             } else if audio_recode {
                 "audio a AAC para edición"
             } else {

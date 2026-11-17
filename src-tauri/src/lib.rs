@@ -65,6 +65,7 @@ pub fn run() {
             jobs::start_download,
             jobs::cancel_download,
             jobs::preview_stream,
+            compat::start_prepare,
             preview::prepare_preview,
             preview::cancel_preview,
             local::inspect_local,

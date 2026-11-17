@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { Settings } from "../types";
+import { EDITOR_PROFILES } from "../lib/format";
 import { Icon } from "./Icon";
 
 interface SettingsDrawerProps {
@@ -113,21 +114,46 @@ export function SettingsDrawer({
               </div>
             </label>
 
+            <label className="field">
+              <span>Copia para edición</span>
+              <div className="select-wrap">
+                <select
+                  value={settings.editorProfile}
+                  onChange={(event) =>
+                    onChange({
+                      editorProfile: event.target.value as Settings["editorProfile"],
+                    })
+                  }
+                >
+                  {EDITOR_PROFILES.map((profile) => (
+                    <option key={profile.value} value={profile.value}>
+                      {profile.label}
+                    </option>
+                  ))}
+                </select>
+                <Icon name="chevron" size={14} />
+              </div>
+            </label>
+
             <label className="toggle-row">
               <input
                 type="checkbox"
-                checked={settings.editorReady}
-                onChange={(event) => onChange({ editorReady: event.target.checked })}
+                checked={settings.keepMaster}
+                onChange={(event) => onChange({ keepMaster: event.target.checked })}
               />
               <span>
-                <strong>Preparar para edición</strong>
+                <strong>Conservar máster</strong>
                 <small>
-                  Guarda los vídeos en H.264/AAC dentro de MP4 y pasa a AAC los
-                  audios que no abren los editores. Las calidades altas se
-                  convierten automáticamente.
+                  Guarda también la descarga original en la máxima calidad. La copia
+                  para editar se crea aparte.
                 </small>
               </span>
             </label>
+
+            <p className="note">
+              La descarga se hace siempre en la máxima resolución elegida; la copia de
+              edición solo cambia el formato y, si eliges 1080p, reduce la resolución.
+            </p>
           </section>
 
           <section className="settings-section">

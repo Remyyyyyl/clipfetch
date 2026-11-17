@@ -1,5 +1,5 @@
 import type { DownloadRequest, Job, JobStatus, SourceKind, ToolKind } from "../types";
-import { isAudioPreset } from "./format";
+import { isAudioPreset, isEditorProfile } from "./format";
 import { loadSection, saveSection } from "./persistence";
 
 export const HISTORY_VERSION = 1;
@@ -53,6 +53,13 @@ function restoreRequest(value: unknown): DownloadRequest | null {
     clipEnd > clipStart;
   const source: SourceKind = value.source === "file" ? "file" : "url";
   const preset = typeof value.preset === "string" ? value.preset : "best";
+  const storedProfile =
+    typeof value.editorProfile === "string" ? value.editorProfile : "";
+  const editorProfile = isEditorProfile(storedProfile)
+    ? storedProfile
+    : value.editorReady === false
+      ? "original"
+      : "premiere-1080";
   const kind: ToolKind =
     value.kind === "audio"
       ? "audio"
@@ -81,7 +88,8 @@ function restoreRequest(value: unknown): DownloadRequest | null {
     clipStart: hasClip ? clipStart : null,
     clipEnd: hasClip ? clipEnd : null,
     precise: value.precise === true,
-    editorReady: value.editorReady !== false,
+    editorProfile,
+    keepMaster: value.keepMaster !== false,
   };
 }
 
@@ -125,6 +133,7 @@ function restoreJob(value: unknown): Job | null {
     duration: typeof value.duration === "number" ? value.duration : null,
     request,
     skipped: value.skipped === true,
+    masterPath: optionalString(value.masterPath),
   };
 }
 

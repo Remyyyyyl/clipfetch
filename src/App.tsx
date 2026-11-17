@@ -8,6 +8,7 @@ import "@fontsource/ibm-plex-mono/latin-400.css";
 import "@fontsource/ibm-plex-mono/latin-500.css";
 import "./App.css";
 import type {
+  Clip,
   DownloadRequest,
   EngineProgress,
   EngineStatus,
@@ -49,6 +50,7 @@ import {
 import { LogBuffer } from "./lib/logBuffer";
 import { Icon } from "./components/Icon";
 import { Notice } from "./components/Notice";
+import type { EditorHandle } from "./components/TimelineEditor";
 import { QueueRail } from "./components/QueueRail";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { SetupScreen } from "./components/SetupScreen";
@@ -148,6 +150,26 @@ function App() {
   const analyzeTicketRef = useRef(0);
   const settingsRef = useRef<Settings | null>(null);
   const logBufferRef = useRef<LogBuffer | null>(null);
+
+  const editorRef = useRef<EditorHandle | null>(null);
+  const clipSnapshotRef = useRef<Clip[]>([]);
+  const clipSelectionRef = useRef<string[]>([]);
+  const historyStateRef = useRef({ canUndo: false, canRedo: false });
+
+  const handleClipsChange = useCallback((next: Clip[]) => {
+    clipSnapshotRef.current = next;
+  }, []);
+
+  const handleClipSelectionChange = useCallback((ids: string[]) => {
+    clipSelectionRef.current = ids;
+  }, []);
+
+  const handleHistoryChange = useCallback(
+    (state: { canUndo: boolean; canRedo: boolean }) => {
+      historyStateRef.current = state;
+    },
+    [],
+  );
 
   if (logBufferRef.current === null) {
     logBufferRef.current = new LogBuffer((batch) => {
@@ -1402,6 +1424,10 @@ function App() {
               onSelectNone={selectNone}
               onSelectRange={selectRange}
               onAddClips={stageClips}
+              editorRef={editorRef}
+              onClipsChange={handleClipsChange}
+              onClipSelectionChange={handleClipSelectionChange}
+              onHistoryChange={handleHistoryChange}
             />
           ) : (
             <SetupScreen

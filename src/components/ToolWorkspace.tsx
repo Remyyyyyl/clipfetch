@@ -1,11 +1,18 @@
-import { useState } from "react";
-import type { LocalMedia, PreviewState, SourceKind, ToolKind, YtDlpInfo } from "../types";
+import { useState, type Ref } from "react";
+import type {
+  Clip,
+  LocalMedia,
+  PreviewState,
+  SourceKind,
+  ToolKind,
+  YtDlpInfo,
+} from "../types";
 import { formatBytes, formatCount, formatDuration, presetLabel } from "../lib/format";
 import { localMeta } from "../lib/local";
 import { MAX_LISTED_ENTRIES, entryPosition } from "../lib/playlist";
 import { Icon } from "./Icon";
 import { Notice } from "./Notice";
-import { TimelineEditor } from "./TimelineEditor";
+import { TimelineEditor, type EditorHandle } from "./TimelineEditor";
 
 interface PresetOption {
   value: string;
@@ -48,6 +55,10 @@ interface ToolWorkspaceProps {
   onSelectNone: () => void;
   onSelectRange: (from: number, to: number) => void;
   onAddClips: (ranges: Array<{ start: number; end: number }>) => void;
+  editorRef?: Ref<EditorHandle>;
+  onClipsChange?: (clips: Clip[]) => void;
+  onClipSelectionChange?: (ids: string[]) => void;
+  onHistoryChange?: (state: { canUndo: boolean; canRedo: boolean }) => void;
 }
 
 export function ToolWorkspace({
@@ -86,6 +97,10 @@ export function ToolWorkspace({
   onSelectNone,
   onSelectRange,
   onAddClips,
+  editorRef,
+  onClipsChange,
+  onClipSelectionChange,
+  onHistoryChange,
 }: ToolWorkspaceProps) {
   const isLocal = source === "file";
   const advanced = isLocal || (mode === "advanced" && canAdvanced);
@@ -322,6 +337,7 @@ export function ToolWorkspace({
 
             {advanced && (
               <TimelineEditor
+                ref={editorRef}
                 kind={tool}
                 title={title}
                 sourceKey={`${local.path}:${local.size}`}
@@ -333,6 +349,9 @@ export function ToolWorkspace({
                 onRetryPreview={onRetryPreview}
                 onCancelPreview={onCancelPreview}
                 onAddClips={onAddClips}
+                onClipsChange={onClipsChange}
+                onClipSelectionChange={onClipSelectionChange}
+                onHistoryChange={onHistoryChange}
               />
             )}
           </>
@@ -500,6 +519,7 @@ export function ToolWorkspace({
               </div>
 
               <TimelineEditor
+                ref={editorRef}
                 kind={tool}
                 title={title}
                 sourceKey={info.id || info.webpage_url || title}
@@ -510,6 +530,9 @@ export function ToolWorkspace({
                 onRetryPreview={onRetryPreview}
                 onCancelPreview={onCancelPreview}
                 onAddClips={onAddClips}
+                onClipsChange={onClipsChange}
+                onClipSelectionChange={onClipSelectionChange}
+                onHistoryChange={onHistoryChange}
               />
             </>
           )}

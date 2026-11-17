@@ -1,3 +1,4 @@
+mod browse;
 mod engine;
 mod jobs;
 mod local;
@@ -66,9 +67,12 @@ pub fn run() {
             preview::prepare_preview,
             preview::cancel_preview,
             local::inspect_local,
+            local::probe_fps,
             local::prepare_local_preview,
             local::cancel_local_preview,
             local::start_local_cut,
+            browse::list_media_dir,
+            browse::parent_media_dir,
             store::load_state,
             store::save_state,
             default_download_dir,

@@ -20,7 +20,10 @@ export type IconName =
   | "film"
   | "magnet"
   | "volume"
-  | "volume-off";
+  | "volume-off"
+  | "cursor"
+  | "hand"
+  | "zoom";
 
 interface IconProps {
   name: IconName;
@@ -208,6 +211,28 @@ export function Icon({ name, size = 16, strokeWidth = 1.7, className }: IconProp
         <svg {...common}>
           <path d="M11 5 6 9H3v6h3l5 4V5Z" />
           <path d="m16 9 5 6M21 9l-5 6" />
+        </svg>
+      );
+    case "cursor":
+      return (
+        <svg {...common}>
+          <path d="m5 3 6.5 16 2.2-6.3L20 10.5 5 3Z" />
+        </svg>
+      );
+    case "hand":
+      return (
+        <svg {...common}>
+          <path d="M8 12V6.5a1.5 1.5 0 0 1 3 0V11" />
+          <path d="M11 10.5V5.5a1.5 1.5 0 0 1 3 0V11" />
+          <path d="M14 10.5V6.5a1.5 1.5 0 0 1 3 0V13" />
+          <path d="M17 10.5V9a1.5 1.5 0 0 1 3 0v5.5A6.5 6.5 0 0 1 13.5 21H12a7 7 0 0 1-5.2-2.3L4.3 15A1.7 1.7 0 0 1 7 13.2L8 15" />
+        </svg>
+      );
+    case "zoom":
+      return (
+        <svg {...common}>
+          <circle cx="10.5" cy="10.5" r="6.5" />
+          <path d="m15.5 15.5 5 5M8 10.5h5M10.5 8v5" />
         </svg>
       );
   }

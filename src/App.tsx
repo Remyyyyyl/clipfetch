@@ -1,19 +1,30 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { open } from "@tauri-apps/plugin-dialog";
+import { confirm as confirmDialog, open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "@fontsource-variable/bricolage-grotesque";
 import "@fontsource/ibm-plex-mono/latin-400.css";
 import "@fontsource/ibm-plex-mono/latin-500.css";
 import "./App.css";
 import type {
+  Clip,
   DownloadRequest,
   EngineProgress,
   EngineStatus,
   EngineUpdate,
   Job,
   JobPlanPayload,
+  LayoutState,
   LocalMedia,
   PreviewFile,
   PreviewProgress,
@@ -37,6 +48,7 @@ import {
 } from "./lib/format";
 import { loadSettings, saveSettings } from "./lib/settings";
 import { loadHistory, saveHistory } from "./lib/history";
+import { DEFAULT_LAYOUT, loadLayout, saveLayout } from "./lib/layout";
 import { useFileStorage } from "./lib/persistence";
 import { buildPlaylistItems, entryPositions, isFullSelection } from "./lib/playlist";
 import { aggregateProgress, applyPlan } from "./lib/progress";
@@ -47,13 +59,17 @@ import {
   resolutionLabel,
 } from "./lib/local";
 import { LogBuffer } from "./lib/logBuffer";
+import { isEditableTarget } from "./lib/timeline";
+import { ClipsPanel } from "./components/ClipsPanel";
+import { ControlPanel } from "./components/ControlPanel";
 import { Icon } from "./components/Icon";
+import { MediaBrowser } from "./components/MediaBrowser";
+import { MenuBar } from "./components/MenuBar";
 import { Notice } from "./components/Notice";
-import { QueueRail } from "./components/QueueRail";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { SetupScreen } from "./components/SetupScreen";
-import { ToolWorkspace } from "./components/ToolWorkspace";
-import { TopBar } from "./components/TopBar";
+import { Workspace } from "./components/Workspace";
+import type { EditorHandle } from "./components/TimelineEditor";
 
 const MAX_LOG_LINES = 400;
 const ALREADY_DOWNLOADED = /\[download\]\s+(.+?)\s+has already been downloaded/i;
@@ -139,6 +155,18 @@ function App() {
   const [globalInfo, setGlobalInfo] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyReady, setHistoryReady] = useState(false);
+  const [layout, setLayout] = useState<LayoutState>(DEFAULT_LAYOUT);
+  const appRef = useRef<HTMLDivElement | null>(null);
+  const resizeRef = useRef<{
+    kind: "left" | "right" | "rows";
+    startX: number;
+    startY: number;
+    startLeft: number;
+    startRight: number;
+    startTop: number;
+    width: number;
+    height: number;
+  } | null>(null);
 
   const startingRef = useRef<Set<string>>(new Set());
   const previewTicketRef = useRef(0);
@@ -148,6 +176,35 @@ function App() {
   const analyzeTicketRef = useRef(0);
   const settingsRef = useRef<Settings | null>(null);
   const logBufferRef = useRef<LogBuffer | null>(null);
+
+  const editorRef = useRef<EditorHandle | null>(null);
+  const [clipSnapshot, setClipSnapshot] = useState<Clip[]>([]);
+  const [clipSelection, setClipSelection] = useState<string[]>([]);
+  const [editorHistory, setEditorHistory] = useState({
+    canUndo: false,
+    canRedo: false,
+  });
+
+  const handleClipsChange = useCallback((next: Clip[]) => {
+    setClipSnapshot(next);
+  }, []);
+
+  const handleClipSelectionChange = useCallback((ids: string[]) => {
+    setClipSelection(ids);
+  }, []);
+
+  const handleHistoryChange = useCallback(
+    (state: { canUndo: boolean; canRedo: boolean }) => {
+      setEditorHistory(state);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    setClipSnapshot([]);
+    setClipSelection([]);
+    setEditorHistory({ canUndo: false, canRedo: false });
+  }, [source]);
 
   if (logBufferRef.current === null) {
     logBufferRef.current = new LogBuffer((batch) => {
@@ -171,15 +228,17 @@ function App() {
     setBootError("");
     try {
       await useFileStorage();
-      const [loaded, history, downloadDir, status] = await Promise.all([
+      const [loaded, history, downloadDir, status, storedLayout] = await Promise.all([
         loadSettings(),
         loadHistory(),
         invoke<string>("default_download_dir").catch(() => ""),
         invoke<EngineStatus>("engine_status"),
+        loadLayout(),
       ]);
       if (!loaded.outputDir) loaded.outputDir = downloadDir;
       setEngine(status);
       setSettings(loaded);
+      setLayout(storedLayout);
       if (history && history.length > 0) setJobs(history);
       setHistoryReady(true);
     } catch (error) {
@@ -213,6 +272,14 @@ function App() {
   useEffect(() => {
     if (settings) void saveSettings(settings);
   }, [settings]);
+
+  useEffect(() => {
+    if (!historyReady) return;
+    const timer = window.setTimeout(() => {
+      void saveLayout(layout);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [layout, historyReady]);
 
   useEffect(() => {
     if (analyzeSince === null) {
@@ -435,6 +502,7 @@ function App() {
             outputDir: next.request.outputDir,
             clipStart: next.request.clipStart ?? 0,
             clipEnd: next.request.clipEnd ?? 0,
+            precise: next.request.precise,
           },
         })
       : invoke<string>("start_download", { req: next.request });
@@ -572,12 +640,26 @@ function App() {
         });
         if (previewTicketRef.current !== ticket) return;
         previewRequestRef.current = "";
+        const previewUrl = convertFileSrc(file.path);
         setPreview({
           status: "ready",
-          url: convertFileSrc(file.path),
+          url: previewUrl,
           local: true,
           progress: 100,
+          fps: null,
         });
+        void invoke<number | null>("probe_fps", { path: file.path })
+          .then((fps) => {
+            if (previewTicketRef.current !== ticket) return;
+            setPreview((previous) =>
+              previous.status === "ready" && previous.url === previewUrl
+                ? { ...previous, fps }
+                : previous,
+            );
+          })
+          .catch(() => {
+            // Sin fps: el editor usa 30 y avisa.
+          });
       } catch (error) {
         if (previewTicketRef.current !== ticket) return;
         previewRequestRef.current = "";
@@ -619,12 +701,26 @@ function App() {
         });
         if (previewTicketRef.current !== ticket) return;
         previewRequestRef.current = "";
+        const previewUrl = convertFileSrc(file.path);
         setPreview({
           status: "ready",
-          url: convertFileSrc(file.path),
+          url: previewUrl,
           local: true,
           progress: 100,
+          fps: null,
         });
+        void invoke<number | null>("probe_fps", { path: file.path })
+          .then((fps) => {
+            if (previewTicketRef.current !== ticket) return;
+            setPreview((previous) =>
+              previous.status === "ready" && previous.url === previewUrl
+                ? { ...previous, fps }
+                : previous,
+            );
+          })
+          .catch(() => {
+            // Sin fps: el editor usa 30 y avisa.
+          });
       } catch (error) {
         if (previewTicketRef.current !== ticket) return;
         previewRequestRef.current = "";
@@ -770,6 +866,25 @@ function App() {
     setMode(next === "file" ? "advanced" : "simple");
   };
 
+  const confirmDiscardClips = async () => {
+    if (clipSnapshot.length === 0) return true;
+    try {
+      return await confirmDialog(
+        "Se descartarán los tramos del editor. ¿Quieres continuar?",
+        { title: "Cambiar de fuente", kind: "warning" },
+      );
+    } catch {
+      return true;
+    }
+  };
+
+  const changeSource = async (next: SourceKind) => {
+    if (next === source) return true;
+    if (!(await confirmDiscardClips())) return false;
+    switchSource(next);
+    return true;
+  };
+
   const changeTool = (next: ToolKind) => {
     if (next === tool) return;
     analyzeTicketRef.current += 1;
@@ -806,6 +921,14 @@ function App() {
 
   const selectAll = () => setSelection(new Set(positions));
   const selectNone = () => setSelection(new Set());
+  const selectInvert = () =>
+    setSelection((previous) => {
+      const next = new Set<number>();
+      for (const position of positions) {
+        if (!previous.has(position)) next.add(position);
+      }
+      return next;
+    });
   const selectRange = (from: number, to: number) => {
     const low = Math.min(from, to);
     const high = Math.max(from, to);
@@ -817,6 +940,53 @@ function App() {
       return next;
     });
   };
+
+  const selectAllRef = useRef(selectAll);
+  selectAllRef.current = selectAll;
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      if (event.altKey) return;
+      if (isEditableTarget(event.target)) return;
+      if (
+        document.querySelector(".menu-dialog-layer") ||
+        document.querySelector(".menu-dropdown") ||
+        document.querySelector(".drawer-layer")
+      ) {
+        return;
+      }
+      const key = event.key.toLowerCase();
+      const editor = editorRef.current;
+      const editorActive = Boolean(editor) && (mode === "advanced" || source === "file");
+      const target = event.target as HTMLElement | null;
+      const inPlaylist = Boolean(target?.closest?.(".playlist-picker"));
+
+      if (key === "z" && !event.shiftKey) {
+        if (!editorActive) return;
+        event.preventDefault();
+        editor?.undo();
+      } else if (key === "y" || (key === "z" && event.shiftKey)) {
+        if (!editorActive) return;
+        event.preventDefault();
+        editor?.redo();
+      } else if (key === "a") {
+        if (inPlaylist) {
+          event.preventDefault();
+          selectAllRef.current();
+        } else if (editorActive) {
+          event.preventDefault();
+          editor?.selectAllClips();
+        }
+      } else if (key === "enter") {
+        if (!editorActive) return;
+        event.preventDefault();
+        editor?.stageSelectedClips();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [mode, source]);
 
   const presets = tool === "video" ? VIDEO_PRESETS : AUDIO_PRESETS;
   const preset = settings
@@ -875,6 +1045,7 @@ function App() {
       duration: info.duration,
       preset,
       clip: null,
+      precise: false,
       isPlaylist: playlist,
       playlistItems,
       totalItems,
@@ -914,6 +1085,7 @@ function App() {
           resolution: resolutionLabel(local),
           preset: LOCAL_PRESET,
           clip: range,
+          precise: false,
           isPlaylist: false,
           playlistItems: null,
           totalItems: 1,
@@ -959,6 +1131,7 @@ function App() {
         duration: info.duration,
         preset,
         clip: range,
+        precise: false,
         isPlaylist: false,
         playlistItems: null,
         totalItems: 1,
@@ -1027,6 +1200,7 @@ function App() {
       totalItems: item.totalItems,
       clipStart: item.clip?.start ?? null,
       clipEnd: item.clip?.end ?? null,
+      precise: item.precise,
     };
 
     return {
@@ -1183,10 +1357,122 @@ function App() {
     (job) => job.status === "starting" || job.status === "downloading",
   ).length;
 
+  const exitApp = async () => {
+    if (activeCount > 0) {
+      let confirmed = false;
+      try {
+        confirmed = await confirmDialog(
+          "Hay descargas en curso. ¿Cerrar ClipFetch de todos modos?",
+          { title: "Salir de ClipFetch", kind: "warning" },
+        );
+      } catch {
+        confirmed = true;
+      }
+      if (!confirmed) return;
+    }
+    await getCurrentWindow().close();
+  };
+
+  const openLocalFromMenu = async () => {
+    if (!(await changeSource("file"))) return;
+    await pickLocalFile();
+  };
+
+  const analyzeFromMenu = async () => {
+    if (!(await changeSource("url"))) return;
+    if (url.trim()) await analyze();
+  };
+
+  const openLocalPath = async (path: string) => {
+    if (!(await changeSource("file"))) return;
+    await inspectLocalFile(path);
+  };
+
+  const selectClipsAll = () => editorRef.current?.selectAllClips();
+  const selectClipsNone = () => editorRef.current?.clearClipSelection();
+  const selectClipsInvert = () => editorRef.current?.invertClipSelection();
+  const selectClipFromPanel = (id: string) => editorRef.current?.selectClip(id);
+  const deleteClipFromPanel = (id: string) => editorRef.current?.deleteClip(id);
+
+  const resetLayout = () => {
+    setLayout(DEFAULT_LAYOUT);
+  };
+
+  const startResize =
+    (kind: "left" | "right" | "rows") =>
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const rect = appRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      event.preventDefault();
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // Puntero sintético.
+      }
+      resizeRef.current = {
+        kind,
+        startX: event.clientX,
+        startY: event.clientY,
+        startLeft: layout.columns.left,
+        startRight: layout.columns.right,
+        startTop: layout.rows.top,
+        width: rect.width,
+        height: rect.height,
+      };
+    };
+
+  const moveResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = resizeRef.current;
+    if (!resize) return;
+    event.preventDefault();
+    if (resize.kind === "left" || resize.kind === "right") {
+      const delta = ((event.clientX - resize.startX) / Math.max(1, resize.width)) * 100;
+      setLayout((previous) => ({
+        ...previous,
+        columns: {
+          ...previous.columns,
+          left:
+            resize.kind === "left"
+              ? Math.min(40, Math.max(12, resize.startLeft + delta))
+              : previous.columns.left,
+          right:
+            resize.kind === "right"
+              ? Math.min(45, Math.max(18, resize.startRight - delta))
+              : previous.columns.right,
+        },
+      }));
+      return;
+    }
+    const delta =
+      ((event.clientY - resize.startY) / Math.max(1, resize.height - 44)) * 100;
+    setLayout((previous) => ({
+      ...previous,
+      rows: {
+        top: Math.min(78, Math.max(35, resize.startTop + delta)),
+      },
+    }));
+  };
+
+  const endResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    resizeRef.current = null;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // La captura ya se liberó.
+    }
+  };
+
   const canAdvanced =
     source === "file"
       ? Boolean(local && (local.duration ?? 0) > 1)
       : Boolean(info && info._type !== "playlist" && (info.duration ?? 0) > 1);
+
+  useEffect(() => {
+    if (canAdvanced) return;
+    setClipSnapshot([]);
+    setClipSelection([]);
+    setEditorHistory({ canUndo: false, canRedo: false });
+  }, [canAdvanced]);
 
   const previewRetry = () => {
     if (source === "file") {
@@ -1316,11 +1602,26 @@ function App() {
     return <BootScreen error={bootError} onRetry={loadApp} />;
   }
 
+  const hasCompleted = jobs.some((job) => job.status === "completed");
+  const queueCount = staged.length + jobs.length;
+  const editorActive = mode === "advanced" || source === "file";
+
   return (
-    <div className="app-shell">
-      <TopBar
-        tool={tool}
-        onToolChange={changeTool}
+    <div
+      className={`app-shell${layout.clipsVisible ? "" : " is-clips-hidden"}${
+        layout.mediaVisible ? "" : " is-media-hidden"
+      }`}
+      style={
+        {
+          "--col-left": `${layout.columns.left}%`,
+          "--col-right": `${layout.columns.right}%`,
+          "--row-top": `${layout.rows.top}fr`,
+          "--row-bottom": `${100 - layout.rows.top}fr`,
+          "--monitor-max": `${layout.workspace.monitor}vh`,
+        } as CSSProperties
+      }
+    >
+      <MenuBar
         engine={engine}
         engineBusy={engineBusy}
         enginePercent={enginePercent}
@@ -1328,51 +1629,63 @@ function App() {
         engineUpdate={engineUpdate}
         onUpdateEngine={() => void runEngineTask("update_ytdlp")}
         onOpenSettings={() => setSettingsOpen(true)}
+        canEdit={editorActive}
+        canUndo={editorHistory.canUndo}
+        canRedo={editorHistory.canRedo}
+        onUndo={() => editorRef.current?.undo()}
+        onRedo={() => editorRef.current?.redo()}
+        canCut={clipSnapshot.length > 0}
+        onCut={() => editorRef.current?.cutAtPlayhead()}
+        canDelete={clipSelection.length > 0}
+        onDelete={() => editorRef.current?.deleteSelectedClips()}
+        onMarkIn={() => editorRef.current?.markIn()}
+        onMarkOut={() => editorRef.current?.markOut()}
+        playlistAvailable={Boolean(isPlaylist)}
+        onPlaylistAll={selectAll}
+        onPlaylistNone={selectNone}
+        onPlaylistInvert={selectInvert}
+        clipsAvailable={clipSnapshot.length > 0}
+        onClipsAll={selectClipsAll}
+        onClipsNone={selectClipsNone}
+        onClipsInvert={selectClipsInvert}
+        clipsVisible={layout.clipsVisible}
+        mediaVisible={layout.mediaVisible}
+        onToggleClips={() =>
+          setLayout((previous) => ({
+            ...previous,
+            clipsVisible: !previous.clipsVisible,
+          }))
+        }
+        onToggleMedia={() =>
+          setLayout((previous) => ({
+            ...previous,
+            mediaVisible: !previous.mediaVisible,
+          }))
+        }
+        onFit={() => editorRef.current?.fitView()}
+        onResetLayout={resetLayout}
+        onOpenLocal={() => void openLocalFromMenu()}
+        onAnalyze={() => void analyzeFromMenu()}
+        onExport={exportQueue}
+        stagedCount={staged.length}
+        hasCompleted={hasCompleted}
+        onClearCompleted={clearCompleted}
+        onExit={() => void exitApp()}
+        queueCount={queueCount}
+        jobs={jobs}
       />
 
-      <div className="app-body">
-        <QueueRail
-          staged={staged}
-          jobs={jobs}
-          activeCount={activeCount}
-          onRemoveStaged={removeStaged}
-          onMoveStaged={moveStaged}
-          onReorderStaged={reorderStaged}
-          onExport={exportQueue}
-          onCancel={cancelJob}
-          onRetry={retryJob}
-          onOpenFolder={openFolder}
-          onRevealFile={revealFile}
-          onClearCompleted={clearCompleted}
-        />
-
-        <main className="canvas">
-          {globalError && (
-            <Notice onClose={() => setGlobalError("")}>{globalError}</Notice>
-          )}
-          {globalInfo && (
-            <Notice kind="info" onClose={() => setGlobalInfo("")}>
-              {globalInfo}
-            </Notice>
-          )}
-          {engineError && (
-            <Notice
-              kind="error"
-              title="No se pudo actualizar yt-dlp"
-              onClose={() => setEngineError("")}
-            >
-              {engineError}
-            </Notice>
-          )}
-
-          {engine.installed ? (
-            <ToolWorkspace
+      {engine.installed ? (
+        <>
+          <div className="left-column">
+            <ControlPanel
               tool={tool}
+              onToolChange={changeTool}
               mode={mode}
               onModeChange={setMode}
               canAdvanced={canAdvanced}
               source={source}
-              onSourceChange={switchSource}
+              onSourceChange={(next) => void changeSource(next)}
               url={url}
               onUrlChange={setUrl}
               analyzing={analyzing}
@@ -1384,9 +1697,6 @@ function App() {
               onPickLocal={() => void pickLocalFile()}
               analysisError={analysisError}
               onClearAnalysisError={() => setAnalysisError("")}
-              preview={preview}
-              onRetryPreview={previewRetry}
-              onCancelPreview={() => cancelPreview(true)}
               preset={preset}
               presetOptions={presets}
               onPresetChange={changePreset}
@@ -1394,27 +1704,136 @@ function App() {
               onOutputDirChange={(value) => updateSettings({ outputDir: value })}
               onPickFolder={pickFolder}
               onStage={stageSimple}
-              isPlaylist={Boolean(isPlaylist)}
-              selection={selection}
-              positions={positions}
-              onToggleItem={toggleItem}
-              onSelectAll={selectAll}
-              onSelectNone={selectNone}
-              onSelectRange={selectRange}
-              onAddClips={stageClips}
+              stageDisabled={Boolean(isPlaylist) && selection.size === 0}
             />
-          ) : (
-            <SetupScreen
-              engine={engine}
-              busy={engineBusy}
-              percent={enginePercent}
-              stage={engineStage}
-              error={engineError}
-              onInstall={() => void runEngineTask("install_engine")}
+
+            <div
+              className="layout-divider is-h"
+              role="separator"
+              aria-orientation="horizontal"
+              aria-label="Ajustar la altura de la botonera"
+              onPointerDown={startResize("rows")}
+              onPointerMove={moveResize}
+              onPointerUp={endResize}
+              onPointerCancel={endResize}
             />
-          )}
-        </main>
-      </div>
+            <MediaBrowser
+              root={settings.outputDir}
+              onOpenFile={(path) => void openLocalPath(path)}
+            />
+          </div>
+
+          <Workspace
+            tool={tool}
+            mode={mode}
+            canAdvanced={canAdvanced}
+            source={source}
+            info={info}
+            local={local}
+            analyzing={analyzing}
+            elapsed={elapsed}
+            preview={preview}
+            preset={preset}
+            monitorPercent={layout.workspace.monitor}
+            onMonitorChange={(value) =>
+              setLayout((previous) => ({
+                ...previous,
+                workspace: { monitor: value },
+              }))
+            }
+            isPlaylist={Boolean(isPlaylist)}
+            selection={selection}
+            positions={positions}
+            onToggleItem={toggleItem}
+            onSelectAll={selectAll}
+            onSelectNone={selectNone}
+            onSelectRange={selectRange}
+            onRetryPreview={previewRetry}
+            onCancelPreview={() => cancelPreview(true)}
+            onAddClips={stageClips}
+            editorRef={editorRef}
+            onClipsChange={handleClipsChange}
+            onClipSelectionChange={handleClipSelectionChange}
+            onHistoryChange={handleHistoryChange}
+          >
+            {globalError && (
+              <Notice onClose={() => setGlobalError("")}>{globalError}</Notice>
+            )}
+            {globalInfo && (
+              <Notice kind="info" onClose={() => setGlobalInfo("")}>
+                {globalInfo}
+              </Notice>
+            )}
+            {engineError && (
+              <Notice
+                kind="error"
+                title="No se pudo actualizar yt-dlp"
+                onClose={() => setEngineError("")}
+              >
+                {engineError}
+              </Notice>
+            )}
+          </Workspace>
+
+          <div
+            className="layout-divider is-v is-v-left"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Ajustar el ancho de la botonera"
+            onPointerDown={startResize("left")}
+            onPointerMove={moveResize}
+            onPointerUp={endResize}
+            onPointerCancel={endResize}
+          />
+
+          <ClipsPanel
+            clips={clipSnapshot}
+            clipSelection={clipSelection}
+            simple={mode === "simple"}
+            staged={staged}
+            jobs={jobs}
+            activeCount={activeCount}
+            onSelectClip={selectClipFromPanel}
+            onDeleteClip={deleteClipFromPanel}
+            onRemoveStaged={removeStaged}
+            onMoveStaged={moveStaged}
+            onReorderStaged={reorderStaged}
+            onExport={exportQueue}
+            onCancel={cancelJob}
+            onRetry={retryJob}
+            onOpenFolder={openFolder}
+            onRevealFile={revealFile}
+            onClearCompleted={clearCompleted}
+          />
+
+          <div
+            className="layout-divider is-v is-v-right"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Ajustar el ancho de la barra de clips"
+            onPointerDown={startResize("right")}
+            onPointerMove={moveResize}
+            onPointerUp={endResize}
+            onPointerCancel={endResize}
+          />
+        </>
+      ) : (
+        <section
+          className="workspace setup-workspace"
+          id="tool-panel"
+          role="tabpanel"
+          aria-labelledby={`tool-${tool}`}
+        >
+          <SetupScreen
+            engine={engine}
+            busy={engineBusy}
+            percent={enginePercent}
+            stage={engineStage}
+            error={engineError}
+            onInstall={() => void runEngineTask("install_engine")}
+          />
+        </section>
+      )}
 
       {dragActive && (
         <div className="drop-overlay" aria-hidden="true">

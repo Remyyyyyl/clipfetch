@@ -9,13 +9,14 @@ import { invoke } from "@tauri-apps/api/core";
  * solo el frontend), se usa `localStorage` como respaldo.
  */
 
-export type Section = "settings" | "history";
+export type Section = "settings" | "history" | "layout";
 
-const SECTIONS: Section[] = ["settings", "history"];
+const SECTIONS: Section[] = ["settings", "history", "layout"];
 
 const LOCAL_KEYS: Record<Section, string> = {
   settings: "clipfetch.settings",
   history: "clipfetch.history",
+  layout: "clipfetch.layout",
 };
 
 /** Clave de la 0.1.0: se lee una vez para no perder los ajustes. */

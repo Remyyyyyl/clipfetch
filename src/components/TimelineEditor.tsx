@@ -1,14 +1,17 @@
 import {
+  forwardRef,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useMemo,
   useRef,
   useState,
+  type ForwardedRef,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { Clip, PreviewState, ToolKind } from "../types";
-import { formatClock, formatDuration } from "../lib/format";
+import { formatClock, formatClockFrames } from "../lib/format";
 import {
   buildRulerTicks,
   clamp,
@@ -16,7 +19,28 @@ import {
   isEditableTarget,
   type SnapCandidate,
 } from "../lib/timeline";
+import { EditTools } from "./EditTools";
 import { Icon } from "./Icon";
+
+export type EditorTool = "select" | "cut" | "hand" | "zoom";
+
+export interface EditorHandle {
+  cutAtPlayhead: () => void;
+  deleteSelectedClips: () => void;
+  markIn: () => void;
+  markOut: () => void;
+  deleteClip: (id: string) => void;
+  selectClip: (id: string, mode?: "replace" | "toggle" | "range") => void;
+  selectAllClips: () => void;
+  clearClipSelection: () => void;
+  invertClipSelection: () => void;
+  undo: () => void;
+  redo: () => void;
+  fitView: () => void;
+  stageAllClips: () => void;
+  stageSelectedClips: () => void;
+  focus: () => void;
+}
 
 interface TimelineEditorProps {
   kind: ToolKind;
@@ -27,9 +51,16 @@ interface TimelineEditorProps {
   preview: PreviewState;
   formatLabel: string;
   localFile?: boolean;
+  active?: boolean;
+  fps?: number | null;
+  monitorPercent: number;
+  onMonitorChange: (value: number) => void;
   onRetryPreview: () => void;
   onCancelPreview: () => void;
   onAddClips: (ranges: Array<{ start: number; end: number }>) => void;
+  onClipsChange?: (clips: Clip[]) => void;
+  onClipSelectionChange?: (ids: string[]) => void;
+  onHistoryChange?: (state: { canUndo: boolean; canRedo: boolean }) => void;
 }
 
 const MIN_CLIP = 1;
@@ -78,20 +109,37 @@ function formatVolume(value: number): string {
   return `${Math.round(value * 100)} %`;
 }
 
-export function TimelineEditor({
-  kind,
-  title,
-  sourceKey,
-  thumbnail,
-  duration,
-  preview,
-  formatLabel,
-  localFile,
-  onRetryPreview,
-  onCancelPreview,
-  onAddClips,
-}: TimelineEditorProps) {
+export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(function TimelineEditor(
+  {
+    kind,
+    title,
+    sourceKey,
+    thumbnail,
+    duration,
+    preview,
+    formatLabel,
+    localFile,
+    active = true,
+    fps,
+    monitorPercent,
+    onMonitorChange,
+    onRetryPreview,
+    onCancelPreview,
+    onAddClips,
+    onClipsChange,
+    onClipSelectionChange,
+    onHistoryChange,
+  }: TimelineEditorProps,
+  ref: ForwardedRef<EditorHandle>,
+) {
   const total = Math.max(MIN_CLIP, Math.floor(duration || 0));
+  const frameRate =
+    fps && Number.isFinite(fps) && fps > 0 ? fps : 30;
+  const fpsKnown = Boolean(fps && Number.isFinite(fps) && fps > 0);
+  const snapToFrame = useCallback(
+    (value: number) => Math.round(value * frameRate) / frameRate,
+    [frameRate],
+  );
   const [clips, setClips] = useState<Clip[]>([]);
   const [start, setStart] = useState(0);
   const [end, setEnd] = useState(() => Math.min(30, total));
@@ -103,7 +151,9 @@ export function TimelineEditor({
   const [snapTarget, setSnapTarget] = useState<SnapState | null>(null);
   const [blocked, setBlocked] = useState<BlockedState | null>(null);
   const [hover, setHover] = useState<HoverState | null>(null);
-  const [dragging, setDragging] = useState<"start" | "end" | "seek" | null>(null);
+  const [dragging, setDragging] = useState<
+    "start" | "end" | "seek" | "move" | null
+  >(null);
   const [seeking, setSeeking] = useState(false);
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
@@ -134,6 +184,106 @@ export function TimelineEditor({
   } | null>(null);
   const wheelHandlerRef = useRef<(event: WheelEvent) => void>(() => {});
 
+  const [selectedClipIds, setSelectedClipIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [tool, setTool] = useState<EditorTool>("select");
+  const [historyState, setHistoryState] = useState({
+    canUndo: false,
+    canRedo: false,
+  });
+
+  const clipsRef = useRef<Clip[]>([]);
+  const selectionRef = useRef<Set<string>>(new Set());
+  const undoRef = useRef<Clip[][]>([]);
+  const redoRef = useRef<Clip[][]>([]);
+  const selectionAnchorRef = useRef<string | null>(null);
+  const activeRef = useRef(active);
+  const moveRef = useRef<{
+    id: string;
+    startX: number;
+    start: number;
+    end: number;
+    rect: DOMRect;
+    viewDuration: number;
+    snapshot: Clip[];
+  } | null>(null);
+  const panRef = useRef<{ startX: number; startView: number } | null>(null);
+  const monitorResizeRef = useRef<{
+    startY: number;
+    startPercent: number;
+  } | null>(null);
+
+  selectionRef.current = selectedClipIds;
+  activeRef.current = active;
+
+  const clearSelection = useCallback(() => {
+    selectionAnchorRef.current = null;
+    setSelectedClipIds((previous) =>
+      previous.size === 0 ? previous : new Set<string>(),
+    );
+  }, []);
+
+  const pruneSelection = useCallback((nextClips: Clip[]) => {
+    const valid = new Set(nextClips.map((clip) => clip.id));
+    setSelectedClipIds((previous) => {
+      if (previous.size === 0) return previous;
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of previous) {
+        if (valid.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : previous;
+    });
+    if (
+      selectionAnchorRef.current &&
+      !valid.has(selectionAnchorRef.current)
+    ) {
+      selectionAnchorRef.current = null;
+    }
+  }, []);
+
+  const syncHistory = useCallback(() => {
+    setHistoryState({
+      canUndo: undoRef.current.length > 0,
+      canRedo: redoRef.current.length > 0,
+    });
+  }, []);
+
+  const clearHistory = useCallback(() => {
+    undoRef.current = [];
+    redoRef.current = [];
+    syncHistory();
+  }, [syncHistory]);
+
+  const setClipsDirect = useCallback((next: Clip[]) => {
+    clipsRef.current = next;
+    setClips(next);
+  }, []);
+
+  const commitClips = useCallback(
+    (next: Clip[]) => {
+      const previous = clipsRef.current;
+      if (next === previous) return;
+      undoRef.current = [...undoRef.current.slice(-99), previous];
+      redoRef.current = [];
+      setClipsDirect(next);
+      pruneSelection(next);
+      syncHistory();
+    },
+    [pruneSelection, setClipsDirect, syncHistory],
+  );
+
+  const updateClips = useCallback(
+    (updater: (previous: Clip[]) => Clip[]) => {
+      const previous = clipsRef.current;
+      const next = updater(previous);
+      if (next !== previous) commitClips(next);
+    },
+    [commitClips],
+  );
+
   const minViewDuration = Math.min(MIN_VIEW_SECONDS, total);
   const viewDuration = total * Math.pow(minViewDuration / total, zoom);
   const maxViewStart = Math.max(0, total - viewDuration);
@@ -160,7 +310,9 @@ export function TimelineEditor({
       cancelAnimationFrame(seekFrameRef.current);
       seekFrameRef.current = null;
     }
-    setClips([]);
+    setClipsDirect([]);
+    clearHistory();
+    clearSelection();
     setStart(0);
     setEnd(Math.min(30, total));
     setCurrent(0);
@@ -173,7 +325,31 @@ export function TimelineEditor({
     setZoom(0);
     setViewStart(0);
     dragRef.current = null;
-  }, [sourceKey, total]);
+    moveRef.current = null;
+    panRef.current = null;
+  }, [clearHistory, clearSelection, setClipsDirect, sourceKey, total]);
+
+  useEffect(() => {
+    onClipsChange?.(clips);
+  }, [clips, onClipsChange]);
+
+  useEffect(() => {
+    onClipSelectionChange?.(Array.from(selectedClipIds));
+  }, [selectedClipIds, onClipSelectionChange]);
+
+  useEffect(() => {
+    onHistoryChange?.(historyState);
+  }, [historyState, onHistoryChange]);
+
+  useEffect(() => {
+    if (active) return;
+    mediaRef.current?.pause();
+    setPlaying(false);
+    dragRef.current = null;
+    moveRef.current = null;
+    panRef.current = null;
+    setDragging(null);
+  }, [active]);
 
   useEffect(() => {
     setViewStart((previous) => clamp(previous, 0, maxViewStart));
@@ -259,6 +435,14 @@ export function TimelineEditor({
       });
     },
     [total, ensureVisible],
+  );
+
+  const stepFrame = useCallback(
+    (direction: -1 | 1) => {
+      if (kind === "audio") return;
+      seek(clamp(snapToFrame(current) + direction / frameRate, 0, total));
+    },
+    [current, frameRate, kind, seek, snapToFrame, total],
   );
 
   const togglePlay = useCallback(() => {
@@ -548,30 +732,34 @@ export function TimelineEditor({
   }, [playing, current, viewStart, viewDuration, total, maxViewStart]);
 
   const markStart = useCallback(() => {
-    const raw = Math.round(current);
+    const raw = snapToFrame(current);
     const max = Math.max(0, end - MIN_CLIP);
     const value = clamp(raw, 0, max);
     if (raw > max) flashBlocked("start");
     else clearBlocked();
     setStart(value);
     seek(value);
-  }, [current, end, flashBlocked, clearBlocked, seek]);
+  }, [current, end, flashBlocked, clearBlocked, seek, snapToFrame]);
 
   const markEnd = useCallback(() => {
-    const raw = Math.round(current);
+    const raw = snapToFrame(current);
     const min = Math.min(total, start + MIN_CLIP);
     const value = clamp(raw, min, total);
     if (raw < min) flashBlocked("end");
     else clearBlocked();
     setEnd(value);
     seek(value);
-  }, [current, start, total, flashBlocked, clearBlocked, seek]);
+  }, [current, start, total, flashBlocked, clearBlocked, seek, snapToFrame]);
 
   const addWorkingClip = () => {
     if (end - start < MIN_CLIP) return;
-    const range = { start: Math.round(start), end: Math.round(end) };
-    setClips((previous) => {
-      if (previous.some((clip) => clip.start === range.start && clip.end === range.end)) {
+    const range = { start: snapToFrame(start), end: snapToFrame(end) };
+    updateClips((previous) => {
+      if (
+        previous.some(
+          (clip) => clip.start === range.start && clip.end === range.end,
+        )
+      ) {
         return previous;
       }
       return [...previous, { id: crypto.randomUUID(), ...range }].sort(
@@ -580,11 +768,160 @@ export function TimelineEditor({
     });
   };
 
-  const stageClips = () => {
-    if (clips.length === 0) return;
-    onAddClips(clips.map((clip) => ({ start: clip.start, end: clip.end })));
-    setClips([]);
-  };
+  const stageClips = useCallback(() => {
+    const list = clipsRef.current;
+    if (list.length === 0) return;
+    onAddClips(list.map((clip) => ({ start: clip.start, end: clip.end })));
+    setClipsDirect([]);
+    clearHistory();
+    clearSelection();
+  }, [clearHistory, clearSelection, onAddClips, setClipsDirect]);
+
+  const stageSelectedClips = useCallback(() => {
+    const selected = selectionRef.current;
+    const list =
+      selected.size > 0
+        ? clipsRef.current.filter((clip) => selected.has(clip.id))
+        : clipsRef.current;
+    if (list.length === 0) return;
+    onAddClips(list.map((clip) => ({ start: clip.start, end: clip.end })));
+    setClipsDirect(
+      selected.size > 0
+        ? clipsRef.current.filter((clip) => !selected.has(clip.id))
+        : [],
+    );
+    clearHistory();
+    clearSelection();
+  }, [clearHistory, clearSelection, onAddClips, setClipsDirect]);
+
+  const selectClip = useCallback(
+    (id: string, mode: "replace" | "toggle" | "range" = "replace") => {
+      setSelectedClipIds((previous) => {
+        if (mode === "replace") {
+          selectionAnchorRef.current = id;
+          return new Set([id]);
+        }
+        const next = new Set(previous);
+        if (mode === "toggle") {
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          selectionAnchorRef.current = id;
+          return next;
+        }
+        const anchor = selectionAnchorRef.current;
+        const list = clipsRef.current;
+        const from = anchor
+          ? list.findIndex((clip) => clip.id === anchor)
+          : -1;
+        const to = list.findIndex((clip) => clip.id === id);
+        if (from < 0 || to < 0) {
+          next.add(id);
+          selectionAnchorRef.current = id;
+          return next;
+        }
+        for (let index = Math.min(from, to); index <= Math.max(from, to); index += 1) {
+          next.add(list[index].id);
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
+  const selectAllClips = useCallback(() => {
+    const list = clipsRef.current;
+    selectionAnchorRef.current = list[list.length - 1]?.id ?? null;
+    setSelectedClipIds(new Set(list.map((clip) => clip.id)));
+  }, []);
+
+  const invertClipSelection = useCallback(() => {
+    setSelectedClipIds((previous) => {
+      const next = new Set<string>();
+      for (const clip of clipsRef.current) {
+        if (!previous.has(clip.id)) next.add(clip.id);
+      }
+      selectionAnchorRef.current = null;
+      return next;
+    });
+  }, []);
+
+  const deleteClipsByIds = useCallback(
+    (ids: Set<string>) => {
+      if (ids.size === 0) return;
+      const previous = clipsRef.current;
+      const next = previous.filter((clip) => !ids.has(clip.id));
+      if (next.length === previous.length) return;
+      commitClips(next);
+    },
+    [commitClips],
+  );
+
+  const deleteClip = useCallback(
+    (id: string) => {
+      deleteClipsByIds(new Set([id]));
+    },
+    [deleteClipsByIds],
+  );
+
+  const deleteSelectedClips = useCallback(() => {
+    deleteClipsByIds(selectionRef.current);
+  }, [deleteClipsByIds]);
+
+  const cutAtTime = useCallback(
+    (time: number, targetId?: string) => {
+      const list = clipsRef.current;
+      let target = targetId
+        ? list.find((clip) => clip.id === targetId)
+        : undefined;
+
+      if (!target) {
+        const candidates = list
+          .filter((clip) => time > clip.start && time < clip.end)
+          .sort((first, second) => second.start - first.start);
+        target =
+          candidates.find((clip) => selectionRef.current.has(clip.id)) ??
+          candidates[0];
+      }
+      if (!target) return;
+
+      const cut = snapToFrame(time);
+      if (
+        cut <= target.start + MIN_CLIP + 1e-6 ||
+        cut >= target.end - MIN_CLIP - 1e-6
+      ) {
+        flashBlocked(cut <= target.start + MIN_CLIP ? "start" : "end");
+        return;
+      }
+
+      const left: Clip = { ...target, id: crypto.randomUUID(), end: cut };
+      const right: Clip = { ...target, id: crypto.randomUUID(), start: cut };
+      const next = list
+        .flatMap((clip) => (clip.id === target?.id ? [left, right] : [clip]))
+        .sort((first, second) => first.start - second.start);
+      commitClips(next);
+      selectionAnchorRef.current = left.id;
+      setSelectedClipIds(new Set([left.id]));
+    },
+    [commitClips, flashBlocked, snapToFrame],
+  );
+
+  const undo = useCallback(() => {
+    const previous = undoRef.current.pop();
+    if (!previous) return;
+    redoRef.current.push(clipsRef.current);
+    setClipsDirect(previous);
+    pruneSelection(previous);
+    syncHistory();
+  }, [pruneSelection, setClipsDirect, syncHistory]);
+
+  const redo = useCallback(() => {
+    const next = redoRef.current.pop();
+    if (!next) return;
+    undoRef.current.push(clipsRef.current);
+    setClipsDirect(next);
+    pruneSelection(next);
+    syncHistory();
+  }, [pruneSelection, setClipsDirect, syncHistory]);
 
   const baseSnapCandidates = useMemo<SnapCandidate[]>(() => {
     const list: SnapCandidate[] = [];
@@ -610,7 +947,7 @@ export function TimelineEditor({
 
   const resolveTime = useCallback(
     (raw: number, rect: DOMRect, bypass: boolean, includePlayhead = true) => {
-      const rounded = Math.round(raw);
+      const rounded = snapToFrame(raw);
       if (!snap || bypass) {
         return { value: rounded, target: null as SnapState | null };
       }
@@ -619,7 +956,7 @@ export function TimelineEditor({
         SNAP_MAX_SECONDS,
         (SNAP_PX / Math.max(1, rect.width)) * viewDuration,
       );
-      const playhead = Math.round(current);
+      const playhead = current;
       if (
         includePlayhead &&
         playhead >= viewStart &&
@@ -640,7 +977,7 @@ export function TimelineEditor({
           }
         : { value: rounded, target: null as SnapState | null };
     },
-    [snap, viewDuration, viewStart, viewEnd, current, baseSnapCandidates],
+    [snap, viewDuration, viewStart, viewEnd, current, baseSnapCandidates, snapToFrame],
   );
 
   const beginDrag = (mode: "start" | "end" | "seek", rect: DOMRect) => {
@@ -660,6 +997,55 @@ export function TimelineEditor({
     setHover(null);
   };
 
+  const onClipPointerDown = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    clip: Clip,
+  ) => {
+    if (event.button !== 0) return;
+    if (tool === "hand" || tool === "zoom") return;
+    event.stopPropagation();
+
+    if (tool === "cut") {
+      const rect = trackRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      cutAtTime(timeAt(event.clientX, rect, viewStart, viewDuration), clip.id);
+      return;
+    }
+
+    selectClip(
+      clip.id,
+      event.ctrlKey || event.metaKey
+        ? "toggle"
+        : event.shiftKey
+          ? "range"
+          : "replace",
+    );
+    seek(clip.start);
+
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const media = mediaRef.current;
+    if (media && !media.paused) media.pause();
+    setPlaying(false);
+    moveRef.current = {
+      id: clip.id,
+      startX: event.clientX,
+      start: clip.start,
+      end: clip.end,
+      rect,
+      viewDuration,
+      snapshot: clipsRef.current.map((item) => ({ ...item })),
+    };
+    try {
+      trackRef.current?.setPointerCapture(event.pointerId);
+    } catch {
+      // Puntero sintético.
+    }
+    dragRef.current = null;
+    setDragging("move");
+    setHover(null);
+  };
+
   const onTrackPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     const rect = event.currentTarget.getBoundingClientRect();
@@ -668,8 +1054,26 @@ export function TimelineEditor({
     } catch {
       // Puntero sintético o ya liberado.
     }
-    beginDrag("seek", rect);
     sectionRef.current?.focus({ preventScroll: true });
+
+    if (tool === "hand") {
+      panRef.current = { startX: event.clientX, startView: viewStart };
+      setHover(null);
+      return;
+    }
+
+    if (tool === "zoom") {
+      const ratio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+      zoomTo(
+        zoom + (event.altKey ? -0.12 : 0.12),
+        viewStart + ratio * viewDuration,
+        ratio,
+      );
+      return;
+    }
+
+    if (tool === "select") clearSelection();
+    beginDrag("seek", rect);
     const resolved = resolveTime(
       timeAt(event.clientX, rect, viewStart, viewDuration),
       rect,
@@ -697,6 +1101,32 @@ export function TimelineEditor({
     };
 
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const pan = panRef.current;
+    if (pan) {
+      const rect = trackRef.current?.getBoundingClientRect();
+      if (!rect || rect.width <= 0) return;
+      const delta = ((event.clientX - pan.startX) / rect.width) * viewDuration;
+      setViewStart(clamp(pan.startView - delta, 0, maxViewStart));
+      return;
+    }
+
+    const move = moveRef.current;
+    if (move) {
+      const delta =
+        ((event.clientX - move.startX) / move.rect.width) * move.viewDuration;
+      const length = move.end - move.start;
+      const nextStart = snapToFrame(
+        clamp(move.start + delta, 0, Math.max(0, total - length)),
+      );
+      const next = clipsRef.current.map((clip) =>
+        clip.id === move.id
+          ? { ...clip, start: nextStart, end: nextStart + length }
+          : clip,
+      );
+      setClipsDirect(next);
+      return;
+    }
+
     const drag = dragRef.current;
     if (!drag) {
       const rect = trackRef.current?.getBoundingClientRect();
@@ -746,8 +1176,51 @@ export function TimelineEditor({
   };
 
   const finishDrag = (event?: ReactPointerEvent<HTMLDivElement>) => {
+    if (panRef.current) {
+      panRef.current = null;
+      setHover(null);
+      if (event) {
+        try {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        } catch {
+          // La captura ya se liberó.
+        }
+      }
+      return;
+    }
+
+    const move = moveRef.current;
+    if (move) {
+      moveRef.current = null;
+      setDragging(null);
+      setHover(null);
+      if (event) {
+        try {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        } catch {
+          // La captura ya se liberó.
+        }
+      }
+      const currentClips = clipsRef.current;
+      if (JSON.stringify(currentClips) !== JSON.stringify(move.snapshot)) {
+        undoRef.current = [...undoRef.current.slice(-99), move.snapshot];
+        redoRef.current = [];
+        syncHistory();
+      }
+      return;
+    }
+
     const drag = dragRef.current;
-    if (!drag) return;
+    if (!drag) {
+      if (event) {
+        try {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        } catch {
+          // La captura ya se liberó.
+        }
+      }
+      return;
+    }
     dragRef.current = null;
     setDragging(null);
     setHover(null);
@@ -785,7 +1258,37 @@ export function TimelineEditor({
   };
 
   const onTrackPointerLeave = () => {
-    if (!dragRef.current) setHover(null);
+    if (!dragRef.current && !moveRef.current && !panRef.current) setHover(null);
+  };
+
+  const startMonitorResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Puntero sintético.
+    }
+    monitorResizeRef.current = {
+      startY: event.clientY,
+      startPercent: monitorPercent,
+    };
+  };
+
+  const moveMonitorResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = monitorResizeRef.current;
+    if (!resize) return;
+    event.preventDefault();
+    const delta = ((event.clientY - resize.startY) / Math.max(1, window.innerHeight)) * 100;
+    onMonitorChange(Math.min(62, Math.max(28, resize.startPercent + delta)));
+  };
+
+  const endMonitorResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    monitorResizeRef.current = null;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // La captura ya se liberó.
+    }
   };
 
   const onHandleKey =
@@ -834,6 +1337,10 @@ export function TimelineEditor({
     markEnd,
     zoomBy,
     fitView,
+    cutAtTime,
+    deleteSelectedClips,
+    setTool,
+    stepFrame,
   });
   shortcutRef.current = {
     togglePlay,
@@ -844,10 +1351,15 @@ export function TimelineEditor({
     markEnd,
     zoomBy,
     fitView,
+    cutAtTime,
+    deleteSelectedClips,
+    setTool,
+    stepFrame,
   };
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (!activeRef.current) return;
       if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) {
         return;
       }
@@ -901,10 +1413,19 @@ export function TimelineEditor({
         case "End":
           handle(() => shortcuts.seek(shortcuts.total));
           break;
+        case "Delete":
+          handle(shortcuts.deleteSelectedClips);
+          break;
         default: {
           const key = event.key.toLowerCase();
           if (key === "i") handle(shortcuts.markStart);
           else if (key === "o") handle(shortcuts.markEnd);
+          else if (key === "c") handle(() => shortcuts.cutAtTime(shortcuts.current));
+          else if (key === "v") handle(() => shortcuts.setTool("select"));
+          else if (key === "h") handle(() => shortcuts.setTool("hand"));
+          else if (key === "z") handle(() => shortcuts.setTool("zoom"));
+          else if (event.key === ",") handle(() => shortcuts.stepFrame(-1));
+          else if (event.key === ".") handle(() => shortcuts.stepFrame(1));
           else if (key === "s") handle(() => setSnap((value) => !value));
           else if (key === "m") handle(() => setMuted((value) => !value));
           else if (key === "+" || key === "=") {
@@ -933,6 +1454,24 @@ export function TimelineEditor({
   const progress = preview.progress ?? 0;
   const snapPercent = snapTarget ? viewPercent(snapTarget.time) : null;
   const hoverPercent = hover ? viewPercent(hover.time) : null;
+
+  useImperativeHandle(ref, () => ({
+    cutAtPlayhead: () => cutAtTime(current),
+    deleteSelectedClips,
+    markIn: markStart,
+    markOut: markEnd,
+    deleteClip,
+    selectClip,
+    selectAllClips,
+    clearClipSelection: clearSelection,
+    invertClipSelection,
+    undo,
+    redo,
+    fitView,
+    stageAllClips: stageClips,
+    stageSelectedClips,
+    focus: () => sectionRef.current?.focus({ preventScroll: true }),
+  }));
 
   const mediaEvents = {
     onPlay: () => {
@@ -1124,7 +1663,9 @@ export function TimelineEditor({
                   : "Stream remoto"}
           </span>
         )}
-        {dragging && dragging !== "seek" ? (
+        {dragging === "move" ? (
+          <span className="tl-seek-badge mono">Mover tramo</span>
+        ) : dragging && dragging !== "seek" ? (
           <span className="tl-seek-badge mono">
             {dragging === "start" ? "Entrada" : "Salida"}{" "}
             {formatClock(dragging === "start" ? start : end)}
@@ -1135,8 +1676,39 @@ export function TimelineEditor({
         )}
       </div>
 
+      <div
+        className="tl-monitor-resize"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Ajustar la altura del monitor"
+        onPointerDown={startMonitorResize}
+        onPointerMove={moveMonitorResize}
+        onPointerUp={endMonitorResize}
+        onPointerCancel={endMonitorResize}
+      />
+
       <div className="tl-transport">
         <div className="tl-transport-main">
+          <button
+            type="button"
+            className="button tiny tl-frame"
+            onClick={() => seek(0)}
+            disabled={!ready}
+            aria-label="Ir al inicio"
+            title="Inicio"
+          >
+            |‹
+          </button>
+          <button
+            type="button"
+            className="button tiny tl-frame"
+            onClick={() => stepFrame(-1)}
+            disabled={!ready || isAudio}
+            aria-label="Frame anterior"
+            title="Frame anterior (,)"
+          >
+            ‹
+          </button>
           <button
             type="button"
             className="tl-play"
@@ -1147,10 +1719,35 @@ export function TimelineEditor({
             <Icon name={playing ? "pause" : "play"} size={15} />
             <span>{playing ? "Pausar" : "Reproducir"}</span>
           </button>
+          <button
+            type="button"
+            className="button tiny tl-frame"
+            onClick={() => stepFrame(1)}
+            disabled={!ready || isAudio}
+            aria-label="Frame siguiente"
+            title="Frame siguiente (.)"
+          >
+            ›
+          </button>
+          <button
+            type="button"
+            className="button tiny tl-frame"
+            onClick={() => seek(total)}
+            disabled={!ready}
+            aria-label="Ir al final"
+            title="Final"
+          >
+            ›|
+          </button>
 
           <span className="mono tl-time">
-            {formatClock(current)} / {formatClock(total)}
+            {formatClockFrames(current, frameRate)} / {formatClock(total)}
           </span>
+          {!isAudio && !fpsKnown && (
+            <span className="hint tl-fps-note" title="FFprobe no pudo leer la frecuencia">
+              30 fps aprox.
+            </span>
+          )}
 
           <div className="tl-selection-readout mono">
             <span>
@@ -1233,7 +1830,7 @@ export function TimelineEditor({
               title="Repetir el tramo al llegar al final"
             >
               <Icon name="refresh" size={12} />
-              Loop
+              Repetir
             </button>
           </div>
         </div>
@@ -1303,16 +1900,23 @@ export function TimelineEditor({
         </button>
       </div>
 
-      <div
-        ref={trackRef}
-        className={`tl-track${dragging ? " is-dragging" : ""}${snapTarget ? " has-snap" : ""}`}
-        onPointerDown={onTrackPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={finishDrag}
-        onPointerCancel={() => finishDrag()}
-        onPointerLeave={onTrackPointerLeave}
-        role="presentation"
-      >
+      <div className="tl-edit-row">
+        <EditTools
+          tool={tool}
+          onToolChange={setTool}
+          snap={snap}
+          onToggleSnap={() => setSnap((value) => !value)}
+        />
+        <div
+          ref={trackRef}
+          className={`tl-track${dragging ? " is-dragging" : ""}${snapTarget ? " has-snap" : ""}`}
+          onPointerDown={onTrackPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={finishDrag}
+          onPointerCancel={() => finishDrag()}
+          onPointerLeave={onTrackPointerLeave}
+          role="presentation"
+        >
         <div className="tl-track-view">
           <div className="tl-ruler" aria-hidden="true">
           {rulerTicks.map((tick) => {
@@ -1338,13 +1942,18 @@ export function TimelineEditor({
         </div>
 
         {clips.map((clip) => (
-          <span
+          <button
             key={clip.id}
-            className="tl-clip-block"
+            type="button"
+            className={`tl-clip-block${selectedClipIds.has(clip.id) ? " is-selected" : ""}`}
             style={{
               left: `${viewPercent(clip.start)}%`,
               width: `${viewPercent(clip.end) - viewPercent(clip.start)}%`,
             }}
+            onPointerDown={(event) => onClipPointerDown(event, clip)}
+            onClick={(event) => event.preventDefault()}
+            aria-pressed={selectedClipIds.has(clip.id)}
+            aria-label={`Tramo de ${formatClock(clip.start)} a ${formatClock(clip.end)}`}
           />
         ))}
 
@@ -1425,6 +2034,7 @@ export function TimelineEditor({
             onKeyDown={onHandleKey("end")}
           />
         )}
+        </div>
       </div>
 
       <div className="tl-foot">
@@ -1474,42 +2084,6 @@ export function TimelineEditor({
         </p>
       </div>
 
-      {clips.length > 0 && (
-        <ul className="tl-list" aria-label="Tramos preparados">
-          {clips.map((clip) => (
-            <li key={clip.id} className="tl-item">
-              <button
-                type="button"
-                className="tl-item-main"
-                onClick={() => {
-                  setStart(clip.start);
-                  setEnd(clip.end);
-                  seek(clip.start);
-                }}
-                title="Ver este tramo"
-              >
-                <span className="mono">
-                  {formatClock(clip.start)} → {formatClock(clip.end)}
-                </span>
-                <span className="mono tl-item-length">
-                  {formatDuration(clip.end - clip.start)}
-                </span>
-              </button>
-              <button
-                type="button"
-                className="icon-button"
-                onClick={() =>
-                  setClips((previous) => previous.filter((item) => item.id !== clip.id))
-                }
-                aria-label={`Quitar tramo de ${formatClock(clip.start)} a ${formatClock(clip.end)}`}
-              >
-                <Icon name="close" size={13} />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-
       <div className="tl-actions">
         <button
           type="button"
@@ -1556,4 +2130,4 @@ export function TimelineEditor({
       )}
     </section>
   );
-}
+});

@@ -98,6 +98,40 @@ Pendiente de probar antes de publicar:
 - Confirmar que el arrastre del raíl sigue funcionando con el drag & drop nativo.
 - Generar el instalador, publicar la release y anotar su SHA-256.
 
+## 1.2 · Nueva interfaz
+
+La app pasa de la mesa de corte apilada a una interfaz de escritorio con cinco
+zonas y barra de clips a la derecha.
+
+- **Menú superior**: Archivo, Edición, Selección, Vista y Ayuda. Incluye
+  deshacer/rehacer, cortar en la aguja, eliminar tramos, toggles de medios y
+  barra de clips, diálogo de atajos, registro de actividad y «Acerca de».
+- **Botonera izquierda**: modo Vídeo/Audio, origen Enlace/Archivo local, URL,
+  calidad, precisión de corte (Exacto deshabilitado hasta validarlo) y carpeta
+  de salida. La calidad ya no se atribuye a Ajustes: vive aquí.
+- **Workspace central**: cabecera de fuente, monitor, transporte, herramientas
+  de edición y línea de tiempo. El editor sigue siendo el dueño de `clips`,
+  `selection` e historial; App mantiene un espejo de solo lectura.
+- **Barra de clips derecha**: pestañas Línea de tiempo, Preparado y Descargas.
+  Exportar solo procesa Preparado; los tramos se añaden antes con el botón del
+  editor. La lista de tramos se sincroniza con la pista.
+- **Medios**: navegador de la carpeta de salida con `list_media_dir`, filtro
+  con `LOCAL_EXTENSIONS` y apertura por doble clic o Enter.
+- **Layout persistente**: proporciones y visibilidad en la sección `layout` de
+  `state.json`; mínimo de ventana 1280×680; medios visible a partir del mínimo.
+- **Edición**: seleccionar, cortar, mover y zoom; `V/H/Z/C`, `Supr`, deshacer y
+  rehacer; paso de fotograma con `,`/`.` y timecode `HH:MM:SS.FF`.
+- **Navegación de medios**: doble clic en carpeta entra; Subir vuelve; el botón
+  Elegir cambia solo la raíz del navegador, no la carpeta de salida.
+
+Pendiente de validar en Windows:
+
+- `cargo check` y `npm run tauri dev` en una máquina con Rust y Build Tools.
+- Probar un MP4 H.264 grande, un MKV H.264, un MKV HEVC y audio FLAC/WAV.
+- Probar el corte exacto (fase de precisión) antes de habilitar el control.
+- Confirmar que el drag & drop nativo no rompe el arrastre de Preparado.
+- Generar el instalador 1.2.0, publicar la release y anotar su SHA-256.
+
 
 ## Sprint 1 (hecho)
 

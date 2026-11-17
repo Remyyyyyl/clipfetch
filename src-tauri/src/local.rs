@@ -132,6 +132,14 @@ fn as_u32(value: Option<&serde_json::Value>) -> Option<u32> {
         .and_then(|value| u32::try_from(value).ok())
 }
 
+fn as_f64(value: Option<&serde_json::Value>) -> Option<f64> {
+    match value {
+        Some(serde_json::Value::String(text)) => text.trim().parse::<f64>().ok(),
+        Some(serde_json::Value::Number(number)) => number.as_f64(),
+        _ => None,
+    }
+}
+
 async fn probe_file(app: &AppHandle, path: &Path) -> Result<Probe, String> {
     let (_, ffprobe) = ffmpeg_paths(app)?;
     let mut cmd = Command::new(&ffprobe);
@@ -201,11 +209,7 @@ async fn probe_file(app: &AppHandle, path: &Path) -> Result<Probe, String> {
                     .map(str::to_string);
                 width = as_u32(stream.get("width"));
                 height = as_u32(stream.get("height"));
-                if let Some(duration) = stream
-                    .get("duration")
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(|value| value.parse::<f64>().ok())
-                {
+                if let Some(duration) = as_f64(stream.get("duration")) {
                     stream_duration = stream_duration.max(duration);
                 }
             }
@@ -221,9 +225,7 @@ async fn probe_file(app: &AppHandle, path: &Path) -> Result<Probe, String> {
 
     let format = value.get("format");
     let duration = format
-        .and_then(|item| item.get("duration"))
-        .and_then(serde_json::Value::as_str)
-        .and_then(|value| value.parse::<f64>().ok())
+        .and_then(|item| as_f64(item.get("duration")))
         .filter(|value| value.is_finite() && *value > 0.0)
         .or_else(|| (stream_duration > 0.0).then_some(stream_duration))
         .unwrap_or(0.0);
@@ -1117,13 +1119,28 @@ pub async fn start_local_cut(
         "-loglevel".into(),
         "warning".into(),
         "-nostdin".into(),
-        "-ss".into(),
-        format_clock(start),
-        "-i".into(),
-        input.to_string_lossy().to_string(),
-        "-t".into(),
-        format_clock(end.saturating_sub(start)),
     ];
+    if kind == "audio" {
+        // En audio no hay keyframes: el seek de salida recorta exacto y evita
+        // que el pre-roll del contenedor alargue el clip.
+        args.extend([
+            "-i".into(),
+            input.to_string_lossy().to_string(),
+            "-ss".into(),
+            format_clock(start),
+            "-t".into(),
+            format_clock(end.saturating_sub(start)),
+        ]);
+    } else {
+        args.extend([
+            "-ss".into(),
+            format_clock(start),
+            "-i".into(),
+            input.to_string_lossy().to_string(),
+            "-t".into(),
+            format_clock(end.saturating_sub(start)),
+        ]);
+    }
     if kind == "audio" {
         args.extend([
             "-map".into(),
@@ -1195,7 +1212,7 @@ pub async fn start_local_cut(
     let children = state.children.clone();
     let cancelled = state.cancelled.clone();
     let app_handle = app.clone();
-    let clip_duration = f64::from(end.saturating_sub(start));
+    let clip_duration = end.saturating_sub(start) as f64;
 
     let _ = app.emit(
         "job://plan",

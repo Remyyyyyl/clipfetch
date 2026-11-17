@@ -1107,7 +1107,7 @@ export function TimelineEditor({
             className={`tl-badge mono${preview.local ? " is-local" : ""}`}
             title={
               localFile
-                ? "Se reproduce el archivo del disco. El corte final se guarda sin recodificar."
+                ? "Se reproduce el archivo del disco. El vídeo se guarda sin recodificar; el audio se copia o pasa a AAC si no cabe."
                 : preview.local
                   ? "Copia local de baja resolución para editar. El corte final se descarga en la calidad elegida."
                   : "La copia local no está disponible; se usa el stream del sitio."

@@ -124,13 +124,15 @@ zonas y barra de clips a la derecha.
 - **Navegación de medios**: doble clic en carpeta entra; Subir vuelve; el botón
   Elegir cambia solo la raíz del navegador, no la carpeta de salida.
 
-Pendiente de validar en Windows:
+Publicada como `v1.2.0` con el instalador `ClipFetch_1.2.0_x64-setup.exe`.
+La compilación de Windows y el instalador se generaron en CI.
+SHA-256: `b50168372fa3cfe27f93a7595c14f162e70060571373841786fdeaa07b7ff265`.
 
-- `cargo check` y `npm run tauri dev` en una máquina con Rust y Build Tools.
-- Probar un MP4 H.264 grande, un MKV H.264, un MKV HEVC y audio FLAC/WAV.
-- Probar el corte exacto (fase de precisión) antes de habilitar el control.
+Pendiente de probar en la app instalada:
+
+- Un MP4 H.264 grande, un MKV H.264, un MKV HEVC y audio FLAC/WAV.
+- El corte exacto (fase de precisión) antes de habilitar el control.
 - Confirmar que el drag & drop nativo no rompe el arrastre de Preparado.
-- Generar el instalador 1.2.0, publicar la release y anotar su SHA-256.
 
 
 ## Sprint 1 (hecho)

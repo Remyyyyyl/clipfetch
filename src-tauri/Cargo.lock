@@ -347,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "clipfetch"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "futures-util",
  "reqwest 0.12.28",

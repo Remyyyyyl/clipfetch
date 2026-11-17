@@ -31,8 +31,10 @@ pub struct DownloadRequest {
     pub rate_limit: Option<String>,
     pub playlist_items: Option<String>,
     pub extra_args: Option<String>,
-    pub clip_start: Option<u32>,
-    pub clip_end: Option<u32>,
+    pub clip_start: Option<f64>,
+    pub clip_end: Option<f64>,
+    #[serde(default)]
+    pub precise: bool,
 }
 
 fn hide_console_std(cmd: &mut std::process::Command) {
@@ -144,23 +146,28 @@ fn preset_args(preset: &str) -> Result<Vec<String>, String> {
     Ok(args)
 }
 
-pub(crate) fn format_clock(seconds: u32) -> String {
+/// Reloj de edición con milisegundos: `HH:MM:SS.mmm`.
+pub(crate) fn format_clock(seconds: f64) -> String {
+    let total_ms = (seconds.max(0.0) * 1000.0).round() as u64;
+    let millis = total_ms % 1000;
+    let total = total_ms / 1000;
     format!(
-        "{:02}:{:02}:{:02}",
-        seconds / 3600,
-        (seconds % 3600) / 60,
-        seconds % 60
+        "{:02}:{:02}:{:02}.{:03}",
+        total / 3600,
+        (total % 3600) / 60,
+        total % 60,
+        millis
     )
 }
 
-/// Prefijo del archivo: `00-01-30_00-02-45`.
-pub(crate) fn clip_label(start: u32, end: u32) -> String {
+/// Prefijo del archivo: `00-01-30.500_00-02-45.750`.
+pub(crate) fn clip_label(start: f64, end: f64) -> String {
     let start = format_clock(start).replace(':', "-");
     let end = format_clock(end).replace(':', "-");
     format!("{start}_{end}")
 }
 
-fn clip_range(req: &DownloadRequest) -> Result<Option<(u32, u32)>, String> {
+fn clip_range(req: &DownloadRequest) -> Result<Option<(f64, f64)>, String> {
     match (req.clip_start, req.clip_end) {
         (None, None) => Ok(None),
         (Some(start), Some(end)) if end > start => Ok(Some((start, end))),
@@ -276,6 +283,9 @@ fn build_args(dir: &Path, req: &DownloadRequest) -> Result<Vec<String>, String> 
     if let Some((start, end)) = clip {
         args.push("--download-sections".into());
         args.push(format!("*{}-{}", format_clock(start), format_clock(end)));
+        if req.precise {
+            args.push("--force-keyframes-at-cuts".into());
+        }
     }
 
     if req.is_playlist {
@@ -776,4 +786,24 @@ pub async fn preview_stream(
     Ok(PreviewStream {
         url: link.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clip_label, format_clock};
+
+    #[test]
+    fn format_clock_incluye_milisegundos() {
+        assert_eq!(format_clock(0.0), "00:00:00.000");
+        assert_eq!(format_clock(90.5), "00:01:30.500");
+        assert_eq!(format_clock(3661.25), "01:01:01.250");
+    }
+
+    #[test]
+    fn clip_label_usa_el_mismo_formato() {
+        assert_eq!(
+            clip_label(0.0, 90.5),
+            "00-00-00.000_00-01-30.500"
+        );
+    }
 }

@@ -3823,44 +3823,106 @@ textarea {
    ========================================================================== */
 
 .app-shell {
+  position: relative;
   display: grid;
   height: 100vh;
   min-height: 0;
   overflow: hidden;
-  grid-template-columns: minmax(240px, 15%) minmax(0, 1fr) minmax(300px, 26%);
-  grid-template-rows: 44px minmax(0, 1.6fr) minmax(0, 0.9fr);
-  grid-template-areas:
-    "menu     menu      menu"
-    "botonera workspace clips"
-    "medios   workspace clips";
-}
-
-.app-shell.is-media-hidden {
+  grid-template-columns:
+    minmax(240px, var(--col-left, 15%))
+    minmax(0, 1fr)
+    minmax(300px, var(--col-right, 26%));
   grid-template-rows: 44px minmax(0, 1fr);
   grid-template-areas:
-    "menu     menu      menu"
-    "botonera workspace clips";
+    "menu  menu      menu"
+    "left  workspace clips";
 }
 
 .app-shell.is-clips-hidden {
-  grid-template-columns: minmax(240px, 15%) minmax(0, 1fr);
+  grid-template-columns: minmax(240px, var(--col-left, 15%)) minmax(0, 1fr);
   grid-template-areas:
-    "menu     menu"
-    "botonera workspace"
-    "medios   workspace";
+    "menu menu"
+    "left workspace";
 }
 
-.app-shell.is-clips-hidden.is-media-hidden {
-  grid-template-columns: minmax(240px, 15%) minmax(0, 1fr);
-  grid-template-rows: 44px minmax(0, 1fr);
-  grid-template-areas:
-    "menu     menu"
-    "botonera workspace";
-}
-
-.app-shell.is-media-hidden .media-browser,
-.app-shell.is-clips-hidden .clips-panel {
+.app-shell.is-clips-hidden .clips-panel,
+.app-shell.is-clips-hidden .is-v-right {
   display: none;
+}
+
+.app-shell.is-media-hidden .left-column {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.app-shell.is-media-hidden .left-column .media-browser,
+.app-shell.is-media-hidden .left-column .is-h {
+  display: none;
+}
+
+.left-column {
+  grid-area: left;
+  display: grid;
+  grid-template-rows:
+    minmax(120px, var(--row-top, 64fr))
+    5px
+    minmax(120px, var(--row-bottom, 36fr));
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--line);
+}
+
+/* Divisores redimensionables */
+
+.layout-divider {
+  z-index: 25;
+  touch-action: none;
+}
+
+.layout-divider.is-h {
+  position: relative;
+  grid-row: 2;
+  width: 100%;
+  height: 5px;
+  background: var(--line);
+  cursor: row-resize;
+}
+
+.layout-divider.is-h:hover {
+  background: var(--amber);
+}
+
+.layout-divider.is-v {
+  position: absolute;
+  top: 44px;
+  bottom: 0;
+  width: 6px;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.layout-divider.is-v::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--line);
+}
+
+.layout-divider.is-v:hover::after {
+  width: 2px;
+  background: var(--amber);
+}
+
+.layout-divider.is-v-left {
+  left: max(240px, var(--col-left, 15%));
+  transform: translateX(-50%);
+}
+
+.layout-divider.is-v-right {
+  right: max(300px, var(--col-right, 26%));
+  transform: translateX(50%);
 }
 
 /* Menú superior */
@@ -4096,12 +4158,11 @@ textarea {
 /* Botonera */
 
 .control-panel {
-  grid-area: botonera;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  border-right: 1px solid var(--line);
   background: var(--surface);
 }
 
@@ -4280,7 +4341,7 @@ textarea {
 }
 
 .workspace .tl-monitor {
-  max-height: 42vh;
+  max-height: var(--monitor-max, 42vh);
 }
 
 .setup-workspace {
@@ -4305,16 +4366,20 @@ textarea {
 .edit-tools {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   flex: none;
+}
+
+.workspace .tl-track {
+  height: 120px;
 }
 
 .edit-tool {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 22px;
+  height: 22px;
   border: 1px solid var(--line);
   border-radius: 2px;
   background: var(--surface);
@@ -4337,25 +4402,88 @@ textarea {
 /* Medios */
 
 .media-browser {
-  grid-area: medios;
+  grid-row: 3;
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  border-top: 1px solid var(--line);
-  border-right: 1px solid var(--line);
   background: var(--surface);
 }
 
 .media-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   flex: none;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--line);
 }
 
 .media-head h2 {
   font-size: 13px;
   font-weight: 600;
+}
+
+.media-head-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.media-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.media-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 4px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.media-row:hover,
+.media-row.is-selected {
+  background: color-mix(in srgb, var(--amber) 9%, transparent);
+}
+
+.media-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--muted);
+}
+
+.media-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-meta {
+  flex: none;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.media-error {
+  color: var(--red);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
 }
 
 .media-body {
@@ -4465,6 +4593,30 @@ textarea {
 
 .clips-foot {
   flex: none;
+}
+
+.tl-frame {
+  min-width: 28px;
+  padding: 0 6px;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.tl-monitor-resize {
+  height: 5px;
+  flex: none;
+  border-radius: 2px;
+  background: var(--line);
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.tl-monitor-resize:hover {
+  background: var(--amber);
+}
+
+.tl-fps-note {
+  font-size: 9.5px;
 }
 
 

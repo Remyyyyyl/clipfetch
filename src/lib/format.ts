@@ -109,6 +109,20 @@ export function formatClock(value: number | null | undefined): string {
     .join(":");
 }
 
+/** Reloj de edición con frames: `HH:MM:SS.FF`. */
+export function formatClockFrames(
+  value: number | null | undefined,
+  fps: number | null | undefined,
+): string {
+  const rate = fps && Number.isFinite(fps) && fps > 0 ? fps : 30;
+  const seconds = Math.max(0, Number(value) || 0);
+  const totalFrames = Math.round(seconds * rate);
+  const whole = Math.floor(totalFrames / rate);
+  const frames = Math.round(totalFrames - whole * rate);
+  const digits = rate >= 100 ? 3 : 2;
+  return `${formatClock(whole)}.${String(frames).padStart(digits, "0")}`;
+}
+
 export function formatCount(value: number | null | undefined): string {
   if (!value || !Number.isFinite(value)) return "";
   return new Intl.NumberFormat("es", {

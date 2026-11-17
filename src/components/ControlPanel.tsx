@@ -119,6 +119,32 @@ export function ControlPanel({
           </button>
         </div>
 
+        {!isLocal && (
+          <div className="mode-switch" role="group" aria-label="Modo de la herramienta">
+            <button
+              type="button"
+              className={mode === "simple" ? "is-on" : ""}
+              aria-pressed={mode === "simple"}
+              onClick={() => onModeChange("simple")}
+            >
+              Simple
+            </button>
+            <button
+              type="button"
+              className={mode === "advanced" ? "is-on" : ""}
+              aria-pressed={mode === "advanced"}
+              onClick={() => onModeChange("advanced")}
+              disabled={!canAdvanced}
+              title={
+                canAdvanced
+                  ? undefined
+                  : "El montaje por tramos necesita una duración conocida y un vídeo suelto"
+              }
+            >
+              Avanzado
+            </button>
+          </div>
+        )}
         {!isLocal ? (
           <>
             <form
@@ -233,32 +259,6 @@ export function ControlPanel({
           </div>
         </label>
 
-        {!isLocal && (
-          <div className="mode-switch" role="group" aria-label="Modo de la herramienta">
-            <button
-              type="button"
-              className={mode === "simple" ? "is-on" : ""}
-              aria-pressed={mode === "simple"}
-              onClick={() => onModeChange("simple")}
-            >
-              Simple
-            </button>
-            <button
-              type="button"
-              className={mode === "advanced" ? "is-on" : ""}
-              aria-pressed={mode === "advanced"}
-              onClick={() => onModeChange("advanced")}
-              disabled={!canAdvanced}
-              title={
-                canAdvanced
-                  ? undefined
-                  : "El montaje por tramos necesita una duración conocida y un vídeo suelto"
-              }
-            >
-              Avanzado
-            </button>
-          </div>
-        )}
       </div>
 
       {!isLocal && mode === "simple" && (

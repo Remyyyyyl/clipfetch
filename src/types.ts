@@ -75,6 +75,22 @@ export interface Settings extends CookiesSettings {
   extraArgs: string;
 }
 
+export interface MediaEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: number;
+  modified: number;
+}
+
+export interface LayoutState {
+  columns: { left: number; right: number };
+  rows: { top: number };
+  workspace: { monitor: number };
+  mediaVisible: boolean;
+  clipsVisible: boolean;
+}
+
 export type ToolKind = "video" | "audio";
 
 /** De dónde sale el archivo: un enlace (yt-dlp) o el disco. */
@@ -114,6 +130,8 @@ export interface StagedItem {
   resolution?: string;
   preset: string;
   clip: { start: number; end: number } | null;
+  /** Recodificar para cortar en el fotograma exacto. */
+  precise: boolean;
   isPlaylist: boolean;
   playlistItems: string | null;
   totalItems: number;
@@ -138,9 +156,11 @@ export interface DownloadRequest {
   extraArgs: string | null;
   /** Número de vídeos que abarca el trabajo (1 en un vídeo suelto, N en una playlist). */
   totalItems: number;
-  /** Recorte: segundos enteros desde el inicio. `null` = vídeo completo. */
+  /** Recorte en segundos desde el inicio. `null` = vídeo completo. */
   clipStart: number | null;
   clipEnd: number | null;
+  /** Recodificar para cortar en el fotograma exacto. */
+  precise: boolean;
 }
 
 export interface Clip {
@@ -174,6 +194,8 @@ export interface PreviewState {
   status: "idle" | "loading" | "ready" | "error";
   url?: string;
   message?: string;
+  /** Frecuencia de fotogramas del preview, si FFprobe pudo leerla. */
+  fps?: number | null;
   /** 0–100 mientras se prepara la copia local. */
   progress?: number | null;
   /** Texto corto para la capa de carga. */

@@ -11,7 +11,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { Clip, PreviewState, ToolKind } from "../types";
-import { formatClock, formatDuration } from "../lib/format";
+import { formatClock, formatClockFrames } from "../lib/format";
 import {
   buildRulerTicks,
   clamp,
@@ -38,6 +38,7 @@ export interface EditorHandle {
   redo: () => void;
   fitView: () => void;
   stageAllClips: () => void;
+  stageSelectedClips: () => void;
   focus: () => void;
 }
 
@@ -51,6 +52,9 @@ interface TimelineEditorProps {
   formatLabel: string;
   localFile?: boolean;
   active?: boolean;
+  fps?: number | null;
+  monitorPercent: number;
+  onMonitorChange: (value: number) => void;
   onRetryPreview: () => void;
   onCancelPreview: () => void;
   onAddClips: (ranges: Array<{ start: number; end: number }>) => void;
@@ -116,6 +120,9 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
     formatLabel,
     localFile,
     active = true,
+    fps,
+    monitorPercent,
+    onMonitorChange,
     onRetryPreview,
     onCancelPreview,
     onAddClips,
@@ -126,6 +133,13 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
   ref: ForwardedRef<EditorHandle>,
 ) {
   const total = Math.max(MIN_CLIP, Math.floor(duration || 0));
+  const frameRate =
+    fps && Number.isFinite(fps) && fps > 0 ? fps : 30;
+  const fpsKnown = Boolean(fps && Number.isFinite(fps) && fps > 0);
+  const snapToFrame = useCallback(
+    (value: number) => Math.round(value * frameRate) / frameRate,
+    [frameRate],
+  );
   const [clips, setClips] = useState<Clip[]>([]);
   const [start, setStart] = useState(0);
   const [end, setEnd] = useState(() => Math.min(30, total));
@@ -195,6 +209,10 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
     snapshot: Clip[];
   } | null>(null);
   const panRef = useRef<{ startX: number; startView: number } | null>(null);
+  const monitorResizeRef = useRef<{
+    startY: number;
+    startPercent: number;
+  } | null>(null);
 
   selectionRef.current = selectedClipIds;
   activeRef.current = active;
@@ -417,6 +435,14 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
       });
     },
     [total, ensureVisible],
+  );
+
+  const stepFrame = useCallback(
+    (direction: -1 | 1) => {
+      if (kind === "audio") return;
+      seek(clamp(snapToFrame(current) + direction / frameRate, 0, total));
+    },
+    [current, frameRate, kind, seek, snapToFrame, total],
   );
 
   const togglePlay = useCallback(() => {
@@ -706,28 +732,28 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
   }, [playing, current, viewStart, viewDuration, total, maxViewStart]);
 
   const markStart = useCallback(() => {
-    const raw = Math.round(current);
+    const raw = snapToFrame(current);
     const max = Math.max(0, end - MIN_CLIP);
     const value = clamp(raw, 0, max);
     if (raw > max) flashBlocked("start");
     else clearBlocked();
     setStart(value);
     seek(value);
-  }, [current, end, flashBlocked, clearBlocked, seek]);
+  }, [current, end, flashBlocked, clearBlocked, seek, snapToFrame]);
 
   const markEnd = useCallback(() => {
-    const raw = Math.round(current);
+    const raw = snapToFrame(current);
     const min = Math.min(total, start + MIN_CLIP);
     const value = clamp(raw, min, total);
     if (raw < min) flashBlocked("end");
     else clearBlocked();
     setEnd(value);
     seek(value);
-  }, [current, start, total, flashBlocked, clearBlocked, seek]);
+  }, [current, start, total, flashBlocked, clearBlocked, seek, snapToFrame]);
 
   const addWorkingClip = () => {
     if (end - start < MIN_CLIP) return;
-    const range = { start: Math.round(start), end: Math.round(end) };
+    const range = { start: snapToFrame(start), end: snapToFrame(end) };
     updateClips((previous) => {
       if (
         previous.some(
@@ -747,6 +773,23 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
     if (list.length === 0) return;
     onAddClips(list.map((clip) => ({ start: clip.start, end: clip.end })));
     setClipsDirect([]);
+    clearHistory();
+    clearSelection();
+  }, [clearHistory, clearSelection, onAddClips, setClipsDirect]);
+
+  const stageSelectedClips = useCallback(() => {
+    const selected = selectionRef.current;
+    const list =
+      selected.size > 0
+        ? clipsRef.current.filter((clip) => selected.has(clip.id))
+        : clipsRef.current;
+    if (list.length === 0) return;
+    onAddClips(list.map((clip) => ({ start: clip.start, end: clip.end })));
+    setClipsDirect(
+      selected.size > 0
+        ? clipsRef.current.filter((clip) => !selected.has(clip.id))
+        : [],
+    );
     clearHistory();
     clearSelection();
   }, [clearHistory, clearSelection, onAddClips, setClipsDirect]);
@@ -841,10 +884,10 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
       }
       if (!target) return;
 
-      const cut = Math.round(time);
+      const cut = snapToFrame(time);
       if (
-        cut <= target.start + MIN_CLIP ||
-        cut >= target.end - MIN_CLIP
+        cut <= target.start + MIN_CLIP + 1e-6 ||
+        cut >= target.end - MIN_CLIP - 1e-6
       ) {
         flashBlocked(cut <= target.start + MIN_CLIP ? "start" : "end");
         return;
@@ -859,7 +902,7 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
       selectionAnchorRef.current = left.id;
       setSelectedClipIds(new Set([left.id]));
     },
-    [commitClips, flashBlocked],
+    [commitClips, flashBlocked, snapToFrame],
   );
 
   const undo = useCallback(() => {
@@ -904,7 +947,7 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
 
   const resolveTime = useCallback(
     (raw: number, rect: DOMRect, bypass: boolean, includePlayhead = true) => {
-      const rounded = Math.round(raw);
+      const rounded = snapToFrame(raw);
       if (!snap || bypass) {
         return { value: rounded, target: null as SnapState | null };
       }
@@ -913,7 +956,7 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
         SNAP_MAX_SECONDS,
         (SNAP_PX / Math.max(1, rect.width)) * viewDuration,
       );
-      const playhead = Math.round(current);
+      const playhead = current;
       if (
         includePlayhead &&
         playhead >= viewStart &&
@@ -934,7 +977,7 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
           }
         : { value: rounded, target: null as SnapState | null };
     },
-    [snap, viewDuration, viewStart, viewEnd, current, baseSnapCandidates],
+    [snap, viewDuration, viewStart, viewEnd, current, baseSnapCandidates, snapToFrame],
   );
 
   const beginDrag = (mode: "start" | "end" | "seek", rect: DOMRect) => {
@@ -1072,7 +1115,7 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
       const delta =
         ((event.clientX - move.startX) / move.rect.width) * move.viewDuration;
       const length = move.end - move.start;
-      const nextStart = Math.round(
+      const nextStart = snapToFrame(
         clamp(move.start + delta, 0, Math.max(0, total - length)),
       );
       const next = clipsRef.current.map((clip) =>
@@ -1218,6 +1261,36 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
     if (!dragRef.current && !moveRef.current && !panRef.current) setHover(null);
   };
 
+  const startMonitorResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Puntero sintético.
+    }
+    monitorResizeRef.current = {
+      startY: event.clientY,
+      startPercent: monitorPercent,
+    };
+  };
+
+  const moveMonitorResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = monitorResizeRef.current;
+    if (!resize) return;
+    event.preventDefault();
+    const delta = ((event.clientY - resize.startY) / Math.max(1, window.innerHeight)) * 100;
+    onMonitorChange(Math.min(62, Math.max(28, resize.startPercent + delta)));
+  };
+
+  const endMonitorResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    monitorResizeRef.current = null;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // La captura ya se liberó.
+    }
+  };
+
   const onHandleKey =
     (mode: "start" | "end") => (event: ReactKeyboardEvent<HTMLButtonElement>) => {
       const value = mode === "start" ? start : end;
@@ -1267,6 +1340,7 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
     cutAtTime,
     deleteSelectedClips,
     setTool,
+    stepFrame,
   });
   shortcutRef.current = {
     togglePlay,
@@ -1280,6 +1354,7 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
     cutAtTime,
     deleteSelectedClips,
     setTool,
+    stepFrame,
   };
 
   useEffect(() => {
@@ -1349,6 +1424,8 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
           else if (key === "v") handle(() => shortcuts.setTool("select"));
           else if (key === "h") handle(() => shortcuts.setTool("hand"));
           else if (key === "z") handle(() => shortcuts.setTool("zoom"));
+          else if (event.key === ",") handle(() => shortcuts.stepFrame(-1));
+          else if (event.key === ".") handle(() => shortcuts.stepFrame(1));
           else if (key === "s") handle(() => setSnap((value) => !value));
           else if (key === "m") handle(() => setMuted((value) => !value));
           else if (key === "+" || key === "=") {
@@ -1392,6 +1469,7 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
     redo,
     fitView,
     stageAllClips: stageClips,
+    stageSelectedClips,
     focus: () => sectionRef.current?.focus({ preventScroll: true }),
   }));
 
@@ -1598,8 +1676,39 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
         )}
       </div>
 
+      <div
+        className="tl-monitor-resize"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Ajustar la altura del monitor"
+        onPointerDown={startMonitorResize}
+        onPointerMove={moveMonitorResize}
+        onPointerUp={endMonitorResize}
+        onPointerCancel={endMonitorResize}
+      />
+
       <div className="tl-transport">
         <div className="tl-transport-main">
+          <button
+            type="button"
+            className="button tiny tl-frame"
+            onClick={() => seek(0)}
+            disabled={!ready}
+            aria-label="Ir al inicio"
+            title="Inicio"
+          >
+            |‹
+          </button>
+          <button
+            type="button"
+            className="button tiny tl-frame"
+            onClick={() => stepFrame(-1)}
+            disabled={!ready || isAudio}
+            aria-label="Frame anterior"
+            title="Frame anterior (,)"
+          >
+            ‹
+          </button>
           <button
             type="button"
             className="tl-play"
@@ -1610,10 +1719,35 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
             <Icon name={playing ? "pause" : "play"} size={15} />
             <span>{playing ? "Pausar" : "Reproducir"}</span>
           </button>
+          <button
+            type="button"
+            className="button tiny tl-frame"
+            onClick={() => stepFrame(1)}
+            disabled={!ready || isAudio}
+            aria-label="Frame siguiente"
+            title="Frame siguiente (.)"
+          >
+            ›
+          </button>
+          <button
+            type="button"
+            className="button tiny tl-frame"
+            onClick={() => seek(total)}
+            disabled={!ready}
+            aria-label="Ir al final"
+            title="Final"
+          >
+            ›|
+          </button>
 
           <span className="mono tl-time">
-            {formatClock(current)} / {formatClock(total)}
+            {formatClockFrames(current, frameRate)} / {formatClock(total)}
           </span>
+          {!isAudio && !fpsKnown && (
+            <span className="hint tl-fps-note" title="FFprobe no pudo leer la frecuencia">
+              30 fps aprox.
+            </span>
+          )}
 
           <div className="tl-selection-readout mono">
             <span>
@@ -1696,7 +1830,7 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
               title="Repetir el tramo al llegar al final"
             >
               <Icon name="refresh" size={12} />
-              Loop
+              Repetir
             </button>
           </div>
         </div>
@@ -1949,45 +2083,6 @@ export const TimelineEditor = forwardRef<EditorHandle, TimelineEditorProps>(func
           </span>
         </p>
       </div>
-
-      {clips.length > 0 && (
-        <ul className="tl-list" aria-label="Tramos preparados">
-          {clips.map((clip) => (
-            <li
-              key={clip.id}
-              className={`tl-item${selectedClipIds.has(clip.id) ? " is-selected" : ""}`}
-            >
-              <button
-                type="button"
-                className="tl-item-main"
-                onClick={() => {
-                  selectClip(clip.id);
-                  setStart(clip.start);
-                  setEnd(clip.end);
-                  seek(clip.start);
-                }}
-                aria-pressed={selectedClipIds.has(clip.id)}
-                title="Ver este tramo"
-              >
-                <span className="mono">
-                  {formatClock(clip.start)} → {formatClock(clip.end)}
-                </span>
-                <span className="mono tl-item-length">
-                  {formatDuration(clip.end - clip.start)}
-                </span>
-              </button>
-              <button
-                type="button"
-                className="icon-button"
-                onClick={() => deleteClip(clip.id)}
-                aria-label={`Quitar tramo de ${formatClock(clip.start)} a ${formatClock(clip.end)}`}
-              >
-                <Icon name="close" size={13} />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
 
       <div className="tl-actions">
         <button

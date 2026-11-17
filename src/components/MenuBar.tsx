@@ -11,6 +11,7 @@ interface MenuBarProps {
   engineUpdate: EngineUpdate | null;
   onUpdateEngine: () => void;
   onOpenSettings: () => void;
+  canEdit: boolean;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -75,6 +76,7 @@ export function MenuBar({
   engineUpdate,
   onUpdateEngine,
   onOpenSettings,
+  canEdit,
   canUndo,
   canRedo,
   onUndo,
@@ -214,24 +216,30 @@ export function MenuBar({
             <div className="menu-dropdown" role="menu">
               {item("Deshacer", onUndo, {
                 shortcut: "Ctrl+Z",
-                disabled: !canUndo,
+                disabled: !canEdit || !canUndo,
               })}
               {item("Rehacer", onRedo, {
                 shortcut: "Ctrl+Y",
-                disabled: !canRedo,
+                disabled: !canEdit || !canRedo,
               })}
               <span className="menu-separator" role="separator" />
               {item("Cortar en la aguja", onCut, {
                 shortcut: "C",
-                disabled: !canCut,
+                disabled: !canEdit || !canCut,
               })}
               {item("Eliminar tramo", onDelete, {
                 shortcut: "Supr",
-                disabled: !canDelete,
+                disabled: !canEdit || !canDelete,
               })}
               <span className="menu-separator" role="separator" />
-              {item("Marcar entrada", onMarkIn, { shortcut: "I" })}
-              {item("Marcar salida", onMarkOut, { shortcut: "O" })}
+              {item("Marcar entrada", onMarkIn, {
+                shortcut: "I",
+                disabled: !canEdit,
+              })}
+              {item("Marcar salida", onMarkOut, {
+                shortcut: "O",
+                disabled: !canEdit,
+              })}
             </div>
           )}
         </div>
@@ -246,9 +254,15 @@ export function MenuBar({
               {item("Invertir", onPlaylistInvert, { disabled: !playlistAvailable })}
               <span className="menu-separator" role="separator" />
               <span className="menu-group-label">Tramos</span>
-              {item("Todos", onClipsAll, { disabled: !clipsAvailable })}
-              {item("Ninguno", onClipsNone, { disabled: !clipsAvailable })}
-              {item("Invertir", onClipsInvert, { disabled: !clipsAvailable })}
+              {item("Todos", onClipsAll, {
+                disabled: !canEdit || !clipsAvailable,
+              })}
+              {item("Ninguno", onClipsNone, {
+                disabled: !canEdit || !clipsAvailable,
+              })}
+              {item("Invertir", onClipsInvert, {
+                disabled: !canEdit || !clipsAvailable,
+              })}
             </div>
           )}
         </div>
@@ -260,7 +274,10 @@ export function MenuBar({
               {item(clipsVisible ? "Ocultar barra de clips" : "Mostrar barra de clips", onToggleClips)}
               {item(mediaVisible ? "Ocultar medios" : "Mostrar medios", onToggleMedia)}
               <span className="menu-separator" role="separator" />
-              {item("Ver toda la línea de tiempo", onFit, { shortcut: "0" })}
+              {item("Ver toda la línea de tiempo", onFit, {
+                shortcut: "0",
+                disabled: !canEdit,
+              })}
               {item("Restablecer disposición", onResetLayout)}
             </div>
           )}
@@ -281,12 +298,12 @@ export function MenuBar({
       </nav>
 
       <div className="menu-bar-tools">
-        {queueCount > 0 && (
+        {queueCount > 0 && !clipsVisible && (
           <button
             type="button"
             className="button tiny menu-queue"
             onClick={onToggleClips}
-            title="Mostrar u ocultar la cola"
+            title="Mostrar la cola"
           >
             Cola ({queueCount})
           </button>

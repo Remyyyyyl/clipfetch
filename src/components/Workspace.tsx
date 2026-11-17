@@ -24,6 +24,8 @@ interface WorkspaceProps {
   elapsed: number;
   preview: PreviewState;
   preset: string;
+  monitorPercent: number;
+  onMonitorChange: (value: number) => void;
   isPlaylist: boolean;
   selection: Set<number>;
   positions: number[];
@@ -52,6 +54,8 @@ export function Workspace({
   elapsed,
   preview,
   preset,
+  monitorPercent,
+  onMonitorChange,
   isPlaylist,
   selection,
   positions,
@@ -242,6 +246,9 @@ export function Workspace({
                 formatLabel={format}
                 localFile={isLocal}
                 active={advanced}
+                fps={preview.fps ?? null}
+                monitorPercent={monitorPercent}
+                onMonitorChange={onMonitorChange}
                 onRetryPreview={onRetryPreview}
                 onCancelPreview={onCancelPreview}
                 onAddClips={onAddClips}

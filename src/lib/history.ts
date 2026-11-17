@@ -78,8 +78,9 @@ function restoreRequest(value: unknown): DownloadRequest | null {
     playlistItems: optionalString(value.playlistItems),
     extraArgs: optionalString(value.extraArgs),
     totalItems: Number.isFinite(totalItems) && totalItems > 0 ? Math.round(totalItems) : 1,
-    clipStart: hasClip ? Math.round(clipStart) : null,
-    clipEnd: hasClip ? Math.round(clipEnd) : null,
+    clipStart: hasClip ? clipStart : null,
+    clipEnd: hasClip ? clipEnd : null,
+    precise: value.precise === true,
   };
 }
 

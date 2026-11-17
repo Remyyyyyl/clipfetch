@@ -93,8 +93,10 @@ pub struct LocalCutRequest {
     pub title: String,
     pub kind: String,
     pub output_dir: String,
-    pub clip_start: u32,
-    pub clip_end: u32,
+    pub clip_start: f64,
+    pub clip_end: f64,
+    #[serde(default)]
+    pub precise: bool,
 }
 
 fn ffmpeg_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
@@ -1053,6 +1055,73 @@ async fn read_cut_stderr(
     tail.into_iter().collect()
 }
 
+fn parse_frame_rate(value: Option<&serde_json::Value>) -> Option<f64> {
+    let text = value.and_then(serde_json::Value::as_str)?;
+    let (numerator, denominator) = text.split_once('/')?;
+    let numerator = numerator.parse::<f64>().ok()?;
+    let denominator = denominator.parse::<f64>().ok()?;
+    if numerator <= 0.0 || denominator <= 0.0 {
+        return None;
+    }
+    let fps = numerator / denominator;
+    if fps.is_finite() && fps > 0.0 && fps <= 240.0 {
+        Some(fps)
+    } else {
+        None
+    }
+}
+
+/// Lee la frecuencia de fotogramas del archivo de preview con FFprobe.
+/// Es una lectura barata y no modifica el archivo.
+#[tauri::command]
+pub async fn probe_fps(app: AppHandle, path: String) -> Result<Option<f64>, String> {
+    let input = PathBuf::from(path.trim());
+    if !input.is_file() {
+        return Err("El archivo de preview ya no está en esa ruta.".to_string());
+    }
+    let (_, ffprobe) = ffmpeg_paths(&app)?;
+    let mut cmd = Command::new(&ffprobe);
+    cmd.arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("v:0")
+        .arg("-show_entries")
+        .arg("stream=avg_frame_rate,r_frame_rate")
+        .arg("-of")
+        .arg("json")
+        .arg(&input)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    hide_console_tokio(&mut cmd);
+
+    let output = tokio::time::timeout(Duration::from_secs(20), cmd.output())
+        .await
+        .map_err(|_| "FFprobe tardó demasiado en leer los fotogramas.".to_string())?
+        .map_err(|e| format!("No se pudo ejecutar FFprobe: {e}"))?;
+
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "No se pudo leer la frecuencia de fotogramas: {}",
+            detail.trim()
+        ));
+    }
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("Respuesta inesperada de FFprobe: {e}"))?;
+    let stream = value
+        .get("streams")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|streams| streams.first());
+
+    Ok(stream.and_then(|item| {
+        parse_frame_rate(item.get("avg_frame_rate"))
+            .or_else(|| parse_frame_rate(item.get("r_frame_rate")))
+    }))
+}
+
 #[tauri::command]
 pub async fn start_local_cut(
     app: AppHandle,
@@ -1087,7 +1156,7 @@ pub async fn start_local_cut(
     let start = req.clip_start;
     let mut end = req.clip_end;
     if probe.duration > 1.0 {
-        let max = probe.duration.ceil() as u32;
+        let max = probe.duration.ceil();
         if start >= max {
             return Err("El tramo empieza después del final del archivo.".to_string());
         }
@@ -1129,19 +1198,8 @@ pub async fn start_local_cut(
             "-ss".into(),
             format_clock(start),
             "-t".into(),
-            format_clock(end.saturating_sub(start)),
+            format_clock(end - start),
         ]);
-    } else {
-        args.extend([
-            "-ss".into(),
-            format_clock(start),
-            "-i".into(),
-            input.to_string_lossy().to_string(),
-            "-t".into(),
-            format_clock(end.saturating_sub(start)),
-        ]);
-    }
-    if kind == "audio" {
         args.extend([
             "-map".into(),
             "0:a:0".into(),
@@ -1154,23 +1212,69 @@ pub async fn start_local_cut(
         }
     } else {
         let audio_copy = mp4_audio_ok(&probe);
-        args.extend(["-map".into(), "0:v:0".into()]);
-        if probe.has_audio {
-            args.push("-map".into());
-            args.push("0:a:0".into());
-        }
-        args.extend(["-c:v".into(), "copy".into()]);
-        if probe.has_audio {
-            if audio_copy {
-                args.extend(["-c:a".into(), "copy".into()]);
-            } else {
-                // El vídeo se copia; solo el audio se convierte para que quepa en MP4.
-                args.extend([
-                    "-c:a".into(),
-                    "aac".into(),
-                    "-b:a".into(),
-                    "192k".into(),
-                ]);
+        if req.precise {
+            // -ss después de -i busca el fotograma exacto, a costa de decodificar
+            // desde el principio. La recodificación es obligatoria en este modo.
+            args.extend([
+                "-i".into(),
+                input.to_string_lossy().to_string(),
+                "-ss".into(),
+                format_clock(start),
+                "-t".into(),
+                format_clock(end - start),
+                "-map".into(),
+                "0:v:0".into(),
+            ]);
+            if probe.has_audio {
+                args.extend(["-map".into(), "0:a:0".into()]);
+            }
+            args.extend([
+                "-c:v".into(),
+                "libx264".into(),
+                "-preset".into(),
+                "veryfast".into(),
+                "-crf".into(),
+                "18".into(),
+            ]);
+            if probe.has_audio {
+                if audio_copy {
+                    args.extend(["-c:a".into(), "copy".into()]);
+                } else {
+                    args.extend([
+                        "-c:a".into(),
+                        "aac".into(),
+                        "-b:a".into(),
+                        "192k".into(),
+                    ]);
+                }
+            }
+        } else {
+            args.extend([
+                "-ss".into(),
+                format_clock(start),
+                "-i".into(),
+                input.to_string_lossy().to_string(),
+                "-t".into(),
+                format_clock(end - start),
+                "-map".into(),
+                "0:v:0".into(),
+            ]);
+            if probe.has_audio {
+                args.extend(["-map".into(), "0:a:0".into()]);
+            }
+            args.extend(["-c:v".into(), "copy".into()]);
+            if probe.has_audio {
+                if audio_copy {
+                    args.extend(["-c:a".into(), "copy".into()]);
+                } else {
+                    // El vídeo se copia; solo el audio se convierte para que quepa en MP4.
+                    args.extend([
+                        "-c:a".into(),
+                        "aac".into(),
+                        "-b:a".into(),
+                        "192k".into(),
+                    ]);
+                }
             }
         }
         if extension == "mp4" {
@@ -1212,7 +1316,7 @@ pub async fn start_local_cut(
     let children = state.children.clone();
     let cancelled = state.cancelled.clone();
     let app_handle = app.clone();
-    let clip_duration = end.saturating_sub(start) as f64;
+    let clip_duration = end - start;
 
     let _ = app.emit(
         "job://plan",
@@ -1222,9 +1326,14 @@ pub async fn start_local_cut(
         &app,
         &job_id,
         &format!(
-            "Cortando {} – {} con FFmpeg (sin recodificar)…",
+            "Cortando {} – {} con FFmpeg ({}).",
             format_clock(start),
-            format_clock(end)
+            format_clock(end),
+            if req.precise {
+                "recodificando para corte exacto"
+            } else {
+                "sin recodificar"
+            }
         ),
     );
 

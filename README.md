@@ -4,10 +4,10 @@ Interfaz de escritorio sencilla para [yt-dlp](https://github.com/yt-dlp/yt-dlp) 
 
 ## Descargar e instalar
 
-1. Entra en [Releases](https://github.com/Remyyyyyl/clipfetch/releases/latest) y descarga el instalador más reciente (`ClipFetch_1.1.0_x64-setup.exe` en la 1.1).
+1. Entra en [Releases](https://github.com/Remyyyyyl/clipfetch/releases/latest) y descarga el instalador más reciente (`ClipFetch_1.2.0_x64-setup.exe` en la 1.2).
 2. Ejecuta el instalador. Se instala por usuario y no pide permisos de administrador.
 3. Abre ClipFetch y pulsa **Instalar motor**. La app descarga yt-dlp, FFmpeg y Deno (~250 MB de descarga; ~450 MB en disco).
-4. Pega una URL, elige la calidad y la carpeta, y pulsa **Descargar**. Para recortar un archivo del disco, cambia a **Archivo local** y ábrelo (o suéltalo en la ventana).
+4. Pega una URL, elige la calidad y la carpeta, y pulsa **Añadir a la cola**. Para recortar un archivo del disco, cambia a **Archivo local** y ábrelo (o suéltalo en la ventana).
 
 **Requisitos:** Windows 10 u 11 de 64 bits y conexión a internet la primera vez. WebView2 suele estar incluido; si falta, el instalador lo descarga. El recorte local usa FFmpeg y FFprobe del motor; no necesita yt-dlp ni Deno.
 
@@ -17,20 +17,22 @@ Interfaz de escritorio sencilla para [yt-dlp](https://github.com/yt-dlp/yt-dlp) 
 
 SHA-256: cada release publica el hash del instalador en su página de GitHub.
 
-> Estado: versión 1.1 con recorte de archivos locales junto a la mesa de corte de YouTube. Siguiente fase: firma de código, verificación de checksums y actualizador.
+> Estado: versión 1.2 con la nueva interfaz de escritorio: menú superior, botonera, workspace central, navegador de medios y barra de clips a la derecha. Siguiente fase: firma de código, verificación de checksums y actualizador.
 
 ## Funciones
 
-- **Barra de herramientas**: modo Vídeo y modo Audio, cada uno con su propio flujo.
-- **Bandeja de preparación**: todo lo que añades se acumula en la barra izquierda; se puede reordenar, quitar y **exportar de una vez**.
-- **Modo avanzado**: copia local de baja resolución (hasta 480p) con audio para editar con fluidez, imán de ajuste, regla descriptiva, zoombar tipo Kdenlive (arrastra la ventana para recorrer y sus bordes para hacer zoom), atajos globales, control de volumen, loop, varios tramos y salida a la cola.
+- **Menú superior**: Archivo, Edición, Selección, Vista y Ayuda; el estado del motor y los ajustes viven a la derecha.
+- **Botonera**: modo Vídeo y Audio, origen Enlace o Archivo local, URL, calidad, precisión de corte y carpeta de salida.
+- **Barra de clips a la derecha**: pestañas de línea de tiempo, Preparado y Descargas; se puede reordenar, quitar y **exportar de una vez**.
+- **Medios**: navegador de la carpeta de salida con doble clic para abrir un vídeo o audio en el editor.
+- **Modo avanzado**: copia local de baja resolución (hasta 480p) con audio para editar con fluidez, imán de ajuste, regla descriptiva, zoombar tipo Kdenlive (arrastra la ventana para recorrer y sus bordes para hacer zoom), atajos globales, control de volumen, repetir, varios tramos, selección con deshacer/rehacer y paso de fotograma.
 - **Archivos locales**: pestaña **Archivo local** o arrastrar y soltar un vídeo/audio en la ventana. FFprobe lee duración, resolución y códecs al instante, y el editor se abre directo en modo tramos. No se copia el archivo completo: el clip se corta con FFmpeg sin recodificar el vídeo (el audio pasa a AAC solo si no cabe en MP4), también en archivos de varios GB.
 - **Audio local**: extrae y corta la pista original (AAC→M4A, MP3→MP3, FLAC→FLAC…) sin recodificar.
 - **Vídeo**: MP4 de 360p a 2160p, con H.264/AAC preferente hasta 1080p. Al cargar un vídeo se preselecciona su máxima resolución disponible; la calidad se puede cambiar a mano.
 - **Audio**: MP3 320/256/192/128, M4A 256/128, Opus 160, FLAC, WAV y audio original.
 - **Playlists y canales**: selector de vídeos con casillas y rangos.
 - **Cola con progreso**, cancelación, reintento, logs y «Limpiar completados».
-- **Historial persistente** de los trabajos exportados y ajustes en `state.json`.
+- **Historial persistente** de los trabajos exportados, ajustes y disposición de la interfaz en `state.json`.
 - **Aviso de actualización** cuando hay una nightly nueva de yt-dlp.
 - Cookies desde Firefox o `cookies.txt` y argumentos extra de yt-dlp.
 - Motor descargado y actualizado por la app: yt-dlp nightly, FFmpeg y Deno.
@@ -66,7 +68,8 @@ src-tauri/src/engine.rs   Descarga, estado y actualización de yt-dlp/FFmpeg/Den
 src-tauri/src/jobs.rs     Análisis, cola, recortes y ejecución de yt-dlp
 src-tauri/src/local.rs    Archivos locales: FFprobe, vista previa y corte con FFmpeg
 src-tauri/src/preview.rs  Copia local de 480p para el editor, con caché y progreso
-src-tauri/src/store.rs    state.json (ajustes e historial) con escritura atómica
+src-tauri/src/browse.rs   Navegador de medios (listado de carpetas)
+src-tauri/src/store.rs    state.json (ajustes, historial y layout) con escritura atómica
 src-tauri/src/lib.rs      Comandos de Tauri
 ```
 
@@ -76,11 +79,11 @@ El motor se guarda en `%LOCALAPPDATA%\app.clipfetch.desktop\engine`:
 - `ffmpeg.exe` y `ffprobe.exe` desde `yt-dlp/FFmpeg-Builds`.
 - `deno.exe`, necesario para los desafíos JavaScript de YouTube.
 
-Los ajustes y el historial se guardan en `%LOCALAPPDATA%\app.clipfetch.desktop\state.json`. Las copias locales del editor viven en `%LOCALAPPDATA%\app.clipfetch.desktop\preview`: se conservan las 3 más recientes y se borran las de más de 7 días al preparar la siguiente. Los archivos locales usan una caché aparte, `preview-local`, con las mismas reglas: si el archivo ya se reproduce en el navegador no se copia nada; si no, se guarda un remux o un proxy 480p para editar.
+Los ajustes, el historial y la disposición de la interfaz se guardan en `%LOCALAPPDATA%\app.clipfetch.desktop\state.json`. Las copias locales del editor viven en `%LOCALAPPDATA%\app.clipfetch.desktop\preview`: se conservan las 3 más recientes y se borran las de más de 7 días al preparar la siguiente. Los archivos locales usan una caché aparte, `preview-local`, con las mismas reglas: si el archivo ya se reproduce en el navegador no se copia nada; si no, se guarda un remux o un proxy 480p para editar.
 
 La app lanza `yt-dlp` como subproceso y lee eventos estructurados con `--progress-template` y `--print ...`. La única línea humana que interpreta es el aviso de archivo ya descargado («has already been downloaded»), para no dar por buena una descarga que no ocurrió.
 
-Los tramos se descargan con `--download-sections "*HH:MM:SS-HH:MM:SS"` (corte en keyframe, sin recodificar) y se guardan en una carpeta con el nombre del vídeo, con el rango como prefijo del archivo. La copia local del editor es solo un proxy de baja resolución (hasta 480p) para previsualizar: no se usa para el corte final, que mantiene la calidad elegida.
+Los tramos se descargan con `--download-sections "*HH:MM:SS.mmm-HH:MM:SS.mmm"` (corte en keyframe, sin recodificar) y se guardan en una carpeta con el nombre del vídeo, con el rango como prefijo del archivo. La copia local del editor es solo un proxy de baja resolución (hasta 480p) para previsualizar: no se usa para el corte final, que mantiene la calidad elegida.
 
 En archivos locales, `local.rs` usa FFprobe para leer la cabecera y decide la vista previa en tres pasos: reproducir el original si es compatible, remuxar a MP4 si el contenedor no vale pero los códecs sí (solo hasta 4 GB), o generar un proxy 480p con progreso. El corte final usa `ffmpeg -ss … -t … -c copy -movflags +faststart`: no recodifica el vídeo y solo escribe el tramo pedido, así que un archivo de 20 GB no se copia entero. El audio se copia cuando cabe en MP4; si no (Opus, DTS, PCM…), se convierte a AAC dentro del mismo MP4. En códecs de vídeo que no caben en MP4 (VP9, ProRes…) se usa MKV con copia. Si el tramo existe, se guarda con ` (2)`, ` (3)`… sin sobrescribir.
 

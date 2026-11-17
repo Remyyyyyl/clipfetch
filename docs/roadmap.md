@@ -202,3 +202,22 @@ Decisiones tomadas con el usuario:
 - Los datos antiguos de `clipfetch.settings.v1` se migran al leerlos.
 - **Pendiente menor**: limitar el tamaño del historial en Rust si algún día se
   guardan muchos más de 60 trabajos.
+
+## E1 · Salida lista para editores (hecho)
+
+- Motivo: Premiere rechaza `av01` (y `vp09`) dentro de MP4 con «El archivo usa el
+  tipo de compresión de vídeo "av01", que no se admite».
+- Ajuste **Preparar para edición** en Ajustes → Salida, activo por defecto.
+- Hasta 1080p se exige H.264/AAC en la selección de formato (`[vcodec^=avc1]`).
+  Si el sitio no lo ofrece, se conserva la resolución y se recodifica después.
+- `src-tauri/src/compat.rs` revisa cada archivo descargado con FFprobe y elige
+  el trabajo mínimo: nada si ya vale, remux + audio AAC si solo falla el audio o
+  el contenedor, y H.264 High (`yuv420p`, CRF 20, `faststart`) si el vídeo no es
+  H.264 de 8 bits. Los HDR (PQ/HLG) pasan a SDR BT.709 con `zscale` + `tonemap`.
+- Los cortes locales aplican la misma política: H.264 8 bits se copia; AV1, VP9,
+  HEVC o H.264 de 10 bits se recodifican. Al recodificar, el seek de entrada es
+  exacto al fotograma.
+- La cola muestra «Convirtiendo a H.264» con el porcentaje de FFmpeg y la
+  conversión se puede cancelar desde el mismo botón que la descarga.
+- **Pendiente**: si se elige 2160p, la conversión 4K tarda del orden del clip y
+  ocupa bastante. Valorar ProRes 422 o codificación por hardware como opción.

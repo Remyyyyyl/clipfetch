@@ -13,6 +13,7 @@ export const DEFAULT_SETTINGS: Settings = {
   extraArgs: "",
   cookiesMode: "none",
   cookiesPath: "",
+  editorReady: true,
 };
 
 const COOKIE_MODES = new Set(["none", "firefox", "file"]);
@@ -41,6 +42,7 @@ function sanitize(value: unknown): Settings | null {
     extraArgs: asString(raw.extraArgs, DEFAULT_SETTINGS.extraArgs),
     cookiesMode: (COOKIE_MODES.has(cookiesMode) ? cookiesMode : "none") as Settings["cookiesMode"],
     cookiesPath: asString(raw.cookiesPath, DEFAULT_SETTINGS.cookiesPath),
+    editorReady: raw.editorReady !== false,
   };
 }
 

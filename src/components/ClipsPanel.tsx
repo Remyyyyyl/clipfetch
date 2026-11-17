@@ -34,6 +34,14 @@ const STATUS_LABELS: Record<JobStatus, string> = {
   cancelled: "Cancelado",
 };
 
+function jobPercent(job: Job): number {
+  const value =
+    job.converting && typeof job.convertPercent === "number"
+      ? job.convertPercent
+      : job.percent;
+  return Math.min(100, Math.max(0, value));
+}
+
 function stagedMeta(item: StagedItem): string {
   if (item.source === "file") {
     const clip = item.clip
@@ -81,7 +89,7 @@ export function ClipsPanel({
   const activePercent =
     active.length === 0
       ? 0
-      : active.reduce((sum, job) => sum + Math.min(100, job.percent), 0) / active.length;
+      : active.reduce((sum, job) => sum + jobPercent(job), 0) / active.length;
 
   useEffect(() => {
     if (simple && tab === "timeline") setTab("staged");
@@ -262,7 +270,7 @@ export function ClipsPanel({
             ) : (
               <ul className="rail-list">
                 {jobs.map((job) => (
-                  <li key={job.id} className={`rail-job ${job.status}`}>
+                  <li key={job.id} className={`rail-job ${job.status}${job.converting ? " converting" : ""}`}>
                     <div className="rail-thumb">
                       {job.thumbnail ? (
                         <img src={job.thumbnail} alt="" referrerPolicy="no-referrer" />
@@ -277,7 +285,7 @@ export function ClipsPanel({
                           {job.title}
                         </span>
                         <span className="rail-percent mono">
-                          {Math.round(Math.min(100, Math.max(0, job.percent)))}%
+                          {Math.round(jobPercent(job))}%
                         </span>
                       </div>
 
@@ -285,15 +293,17 @@ export function ClipsPanel({
                         <span className={`status-dot ${job.status}`} aria-hidden="true" />
                         {job.skipped && job.status === "completed"
                           ? "Ya existía"
-                          : job.request.source === "file" && job.status === "downloading"
-                            ? "Cortando"
-                            : STATUS_LABELS[job.status]}
+                          : job.converting
+                            ? "Convirtiendo a H.264"
+                            : job.request.source === "file" && job.status === "downloading"
+                              ? "Cortando"
+                              : STATUS_LABELS[job.status]}
                       </div>
 
                       <div className="rail-tape" aria-hidden="true">
                         <span
                           className="rail-tape-fill"
-                          style={{ width: `${Math.min(100, Math.max(0, job.percent))}%` }}
+                          style={{ width: `${jobPercent(job)}%` }}
                         />
                       </div>
 

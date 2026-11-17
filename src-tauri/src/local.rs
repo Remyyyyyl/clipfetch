@@ -1,3 +1,4 @@
+use crate::compat;
 use crate::engine;
 use crate::jobs::{clip_label, format_clock, hide_console_tokio, taskkill, AppState};
 use serde::{Deserialize, Serialize};
@@ -81,6 +82,8 @@ struct Probe {
     height: Option<u32>,
     video_codec: Option<String>,
     audio_codec: Option<String>,
+    pix_fmt: Option<String>,
+    color_transfer: Option<String>,
     has_video: bool,
     has_audio: bool,
 }
@@ -97,6 +100,13 @@ pub struct LocalCutRequest {
     pub clip_end: f64,
     #[serde(default)]
     pub precise: bool,
+    /// Deja el clip en H.264/AAC (compatible con Premiere y otros editores).
+    #[serde(default = "default_true")]
+    pub editor_ready: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn ffmpeg_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
@@ -140,6 +150,14 @@ fn as_f64(value: Option<&serde_json::Value>) -> Option<f64> {
         Some(serde_json::Value::Number(number)) => number.as_f64(),
         _ => None,
     }
+}
+
+fn as_text(value: Option<&serde_json::Value>) -> Option<String> {
+    value
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty() && *text != "unknown")
+        .map(str::to_string)
 }
 
 async fn probe_file(app: &AppHandle, path: &Path) -> Result<Probe, String> {
@@ -187,6 +205,8 @@ async fn probe_file(app: &AppHandle, path: &Path) -> Result<Probe, String> {
 
     let mut video_codec = None;
     let mut audio_codec = None;
+    let mut pix_fmt = None;
+    let mut color_transfer = None;
     let mut width = None;
     let mut height = None;
     let mut stream_duration = 0.0_f64;
@@ -205,10 +225,9 @@ async fn probe_file(app: &AppHandle, path: &Path) -> Result<Probe, String> {
                 == 1;
 
             if kind == "video" && !attached && video_codec.is_none() {
-                video_codec = stream
-                    .get("codec_name")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
+                video_codec = as_text(stream.get("codec_name"));
+                pix_fmt = as_text(stream.get("pix_fmt"));
+                color_transfer = as_text(stream.get("color_transfer"));
                 width = as_u32(stream.get("width"));
                 height = as_u32(stream.get("height"));
                 if let Some(duration) = as_f64(stream.get("duration")) {
@@ -217,10 +236,7 @@ async fn probe_file(app: &AppHandle, path: &Path) -> Result<Probe, String> {
             }
 
             if kind == "audio" && audio_codec.is_none() {
-                audio_codec = stream
-                    .get("codec_name")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
+                audio_codec = as_text(stream.get("codec_name"));
             }
         }
     }
@@ -243,6 +259,8 @@ async fn probe_file(app: &AppHandle, path: &Path) -> Result<Probe, String> {
         has_audio: audio_codec.is_some(),
         video_codec,
         audio_codec,
+        pix_fmt,
+        color_transfer,
     })
 }
 
@@ -360,6 +378,54 @@ fn can_remux_mp4(probe: &Probe) -> bool {
         .as_deref()
         .map(|codec| MP4_VIDEO_CODECS.contains(&codec))
         .unwrap_or(false)
+}
+
+/// Contenedor para un corte sin recodificar (ajuste «Preparar para edición»
+/// desactivado): MP4 si los códecs caben, WebM para VP8/VP9/AV1 con Opus o
+/// Vorbis, y MKV como último recurso.
+fn raw_cut_extension(probe: &Probe, container: &str) -> &'static str {
+    if can_remux_mp4(probe) {
+        return "mp4";
+    }
+    if container == "webm" {
+        let video = probe.video_codec.as_deref().unwrap_or("");
+        let audio = probe.audio_codec.as_deref().unwrap_or("");
+        if matches!(video, "vp8" | "vp9" | "av1") && matches!(audio, "" | "vorbis" | "opus") {
+            return "webm";
+        }
+    }
+    "mkv"
+}
+
+fn video_editor_ready(probe: &Probe) -> bool {
+    probe.video_codec.as_deref() == Some("h264")
+        && probe
+            .pix_fmt
+            .as_deref()
+            .map(|pix_fmt| matches!(pix_fmt, "yuv420p" | "yuvj420p"))
+            .unwrap_or(true)
+}
+
+fn audio_editor_ready(codec: &str) -> bool {
+    matches!(
+        codec,
+        "aac"
+            | "mp3"
+            | "flac"
+            | "alac"
+            | "pcm_s16le"
+            | "pcm_s24le"
+            | "pcm_s32le"
+            | "pcm_f32le"
+            | "pcm_u8"
+    )
+}
+
+fn is_hdr(probe: &Probe) -> bool {
+    matches!(
+        probe.color_transfer.as_deref(),
+        Some("smpte2084") | Some("arib-std-b67")
+    )
 }
 
 fn mp4_audio_ok(probe: &Probe) -> bool {
@@ -972,24 +1038,6 @@ fn cut_audio_extension(probe: &Probe) -> &'static str {
     }
 }
 
-fn cut_extension(kind: &str, probe: &Probe, container: &str) -> &'static str {
-    if kind == "audio" {
-        return cut_audio_extension(probe);
-    }
-    if can_remux_mp4(probe) {
-        return "mp4";
-    }
-    if container == "webm" {
-        let video = probe.video_codec.as_deref().unwrap_or("");
-        let audio = probe.audio_codec.as_deref().unwrap_or("");
-        if matches!(video, "vp8" | "vp9" | "av1") && matches!(audio, "" | "vorbis" | "opus") {
-            return "webm";
-        }
-    }
-    // Sin recodificar: MKV admite cualquier combinación de códecs.
-    "mkv"
-}
-
 fn emit_job_log(app: &AppHandle, job_id: &str, line: &str) {
     let _ = app.emit(
         "job://log",
@@ -1152,7 +1200,24 @@ pub async fn start_local_cut(
     }
 
     let container = lower_extension(&input);
-    let extension = cut_extension(kind, &probe, &container);
+    let extension = if kind == "audio" {
+        if req.editor_ready
+            && !audio_editor_ready(probe.audio_codec.as_deref().unwrap_or(""))
+        {
+            "m4a"
+        } else {
+            cut_audio_extension(&probe)
+        }
+    } else if req.editor_ready {
+        "mp4"
+    } else {
+        raw_cut_extension(&probe, &container)
+    };
+    let audio_recode = kind == "audio"
+        && req.editor_ready
+        && !audio_editor_ready(probe.audio_codec.as_deref().unwrap_or(""));
+    let recode_video = kind != "audio"
+        && (req.precise || (req.editor_ready && !video_editor_ready(&probe)));
     let start = req.clip_start;
     let mut end = req.clip_end;
     if probe.duration > 1.0 {
@@ -1204,14 +1269,19 @@ pub async fn start_local_cut(
             "-map".into(),
             "0:a:0".into(),
             "-vn".into(),
-            "-c:a".into(),
-            "copy".into(),
         ]);
+        if audio_recode {
+            args.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "256k".into()]);
+        } else {
+            args.extend(["-c:a".into(), "copy".into()]);
+        }
         if extension == "m4a" {
             args.extend(["-movflags".into(), "+faststart".into()]);
         }
     } else {
-        let audio_copy = mp4_audio_ok(&probe);
+        let audio_copy = probe.audio_codec.as_deref() == Some("aac");
+        let recode = recode_video;
+
         if req.precise {
             // -ss después de -i busca el fotograma exacto, a costa de decodificar
             // desde el principio. La recodificación es obligatoria en este modo.
@@ -1225,30 +1295,9 @@ pub async fn start_local_cut(
                 "-map".into(),
                 "0:v:0".into(),
             ]);
-            if probe.has_audio {
-                args.extend(["-map".into(), "0:a:0".into()]);
-            }
-            args.extend([
-                "-c:v".into(),
-                "libx264".into(),
-                "-preset".into(),
-                "veryfast".into(),
-                "-crf".into(),
-                "18".into(),
-            ]);
-            if probe.has_audio {
-                if audio_copy {
-                    args.extend(["-c:a".into(), "copy".into()]);
-                } else {
-                    args.extend([
-                        "-c:a".into(),
-                        "aac".into(),
-                        "-b:a".into(),
-                        "192k".into(),
-                    ]);
-                }
-            }
         } else {
+            // Al recodificar, el seek de entrada ya es exacto; al copiar puede
+            // incluir el keyframe anterior al punto marcado.
             args.extend([
                 "-ss".into(),
                 format_clock(start),
@@ -1259,24 +1308,46 @@ pub async fn start_local_cut(
                 "-map".into(),
                 "0:v:0".into(),
             ]);
-            if probe.has_audio {
-                args.extend(["-map".into(), "0:a:0".into()]);
+        }
+        if probe.has_audio {
+            args.extend(["-map".into(), "0:a:0".into()]);
+        }
+
+        if recode {
+            if req.editor_ready && is_hdr(&probe) {
+                args.extend(["-vf".into(), compat::TONEMAP_FILTER.into()]);
             }
+            args.extend([
+                "-c:v".into(),
+                "libx264".into(),
+                "-preset".into(),
+                "veryfast".into(),
+                "-crf".into(),
+                if req.precise { "18" } else { "20" }.into(),
+                "-profile:v".into(),
+                "high".into(),
+                "-pix_fmt".into(),
+                "yuv420p".into(),
+            ]);
+        } else {
             args.extend(["-c:v".into(), "copy".into()]);
-            if probe.has_audio {
-                if audio_copy {
-                    args.extend(["-c:a".into(), "copy".into()]);
-                } else {
-                    // El vídeo se copia; solo el audio se convierte para que quepa en MP4.
-                    args.extend([
-                        "-c:a".into(),
-                        "aac".into(),
-                        "-b:a".into(),
-                        "192k".into(),
-                    ]);
-                }
+        }
+
+        if probe.has_audio {
+            if audio_copy {
+                args.extend(["-c:a".into(), "copy".into()]);
+            } else {
+                // El vídeo puede copiarse; el audio se pasa a AAC para que
+                // cualquier editor lo abra sin problemas.
+                args.extend([
+                    "-c:a".into(),
+                    "aac".into(),
+                    "-b:a".into(),
+                    "192k".into(),
+                ]);
             }
         }
+
         if extension == "mp4" {
             args.extend(["-movflags".into(), "+faststart".into()]);
         }
@@ -1288,6 +1359,11 @@ pub async fn start_local_cut(
         output.to_string_lossy().to_string(),
     ]);
 
+    // Un reintento reutiliza el jobId: limpia una cancelación anterior antes
+    // de arrancar. A partir de aquí, si llega una cancelación se respeta.
+    if let Ok(mut cancelled) = state.cancelled.lock() {
+        cancelled.remove(&req.job_id);
+    }
     let mut cmd = Command::new(&ffmpeg);
     cmd.args(&args)
         .stdout(std::process::Stdio::piped())
@@ -1306,8 +1382,13 @@ pub async fn start_local_cut(
     if let Ok(mut children) = state.children.lock() {
         children.insert(req.job_id.clone(), pid);
     }
-    if let Ok(mut cancelled) = state.cancelled.lock() {
-        cancelled.remove(&req.job_id);
+    let cancelled_now = state
+        .cancelled
+        .lock()
+        .map(|guard| guard.contains(&req.job_id))
+        .unwrap_or(false);
+    if cancelled_now {
+        taskkill(pid);
     }
 
     let job_id = req.job_id.clone();
@@ -1331,6 +1412,10 @@ pub async fn start_local_cut(
             format_clock(end),
             if req.precise {
                 "recodificando para corte exacto"
+            } else if recode_video {
+                "recodificando a H.264 para edición"
+            } else if audio_recode {
+                "audio a AAC para edición"
             } else {
                 "sin recodificar"
             }
@@ -1403,6 +1488,18 @@ pub async fn start_local_cut(
                                 format!("FFmpeg terminó sin crear el clip:\n{detail}")
                             },
                         }),
+                    );
+                    return;
+                }
+                let cancelled_at_end = cancelled
+                    .lock()
+                    .map(|mut guard| guard.remove(&job_id))
+                    .unwrap_or(false);
+                if cancelled_at_end {
+                    let _ = tokio::fs::remove_file(&output).await;
+                    let _ = app_handle.emit(
+                        "job://cancelled",
+                        serde_json::json!({ "jobId": job_id }),
                     );
                     return;
                 }

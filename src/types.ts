@@ -73,6 +73,8 @@ export interface Settings extends CookiesSettings {
   concurrency: number;
   rateLimit: string;
   extraArgs: string;
+  /** Deja los vídeos y clips en H.264/AAC (compatible con Premiere). */
+  editorReady: boolean;
 }
 
 export interface MediaEntry {
@@ -161,6 +163,8 @@ export interface DownloadRequest {
   clipEnd: number | null;
   /** Recodificar para cortar en el fotograma exacto. */
   precise: boolean;
+  /** Deja el archivo en H.264/AAC (compatible con editores). */
+  editorReady: boolean;
 }
 
 export interface Clip {
@@ -241,6 +245,10 @@ export interface Job {
   filePercent?: number;
   /** El archivo ya existía en la carpeta y yt-dlp no lo volvió a descargar. */
   skipped?: boolean;
+  /** Se está convirtiendo a H.264/AAC para editores. */
+  converting?: boolean;
+  /** 0–100 de la conversión en curso. */
+  convertPercent?: number;
 }
 
 /** Payload del evento `job://plan`: cuántos archivos forman el vídeo actual. */

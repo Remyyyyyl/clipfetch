@@ -112,6 +112,22 @@ export function SettingsDrawer({
                 </button>
               </div>
             </label>
+
+            <label className="toggle-row">
+              <input
+                type="checkbox"
+                checked={settings.editorReady}
+                onChange={(event) => onChange({ editorReady: event.target.checked })}
+              />
+              <span>
+                <strong>Preparar para edición</strong>
+                <small>
+                  Guarda los vídeos en H.264/AAC dentro de MP4 y pasa a AAC los
+                  audios que no abren los editores. Las calidades altas se
+                  convierten automáticamente.
+                </small>
+              </span>
+            </label>
           </section>
 
           <section className="settings-section">

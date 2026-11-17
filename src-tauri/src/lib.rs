@@ -1,4 +1,5 @@
 mod browse;
+mod compat;
 mod engine;
 mod jobs;
 mod local;

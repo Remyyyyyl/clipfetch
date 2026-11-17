@@ -81,6 +81,7 @@ function restoreRequest(value: unknown): DownloadRequest | null {
     clipStart: hasClip ? clipStart : null,
     clipEnd: hasClip ? clipEnd : null,
     precise: value.precise === true,
+    editorReady: value.editorReady !== false,
   };
 }
 

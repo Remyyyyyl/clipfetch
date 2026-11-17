@@ -1,3 +1,4 @@
+use crate::compat;
 use crate::engine;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -35,6 +36,13 @@ pub struct DownloadRequest {
     pub clip_end: Option<f64>,
     #[serde(default)]
     pub precise: bool,
+    /// Deja el archivo en H.264/AAC (compatible con Premiere y otros editores).
+    #[serde(default = "default_true")]
+    pub editor_ready: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn hide_console_std(cmd: &mut std::process::Command) {
@@ -89,22 +97,28 @@ pub(crate) fn cookie_args(mode: &str, path: Option<&str>) -> Result<Vec<String>,
 }
 
 fn video_args(height: Option<u32>) -> Vec<String> {
+    // Ojo: no usar `-S acodec:aac`. Ese orden hace que `bv*` prefiera un MP4
+    // combinado de 360p (18) antes que el vídeo 1080p en pista separada.
+    // La preferencia de audio se expresa dentro del propio filtro.
     let filter = match height {
-        Some(height) => format!("bv*[height<={height}]+ba/b[height<={height}]/b"),
-        None => "bv*+ba/b".to_string(),
+        // Hasta 1080p YouTube publica H.264: se exige para no recodificar.
+        Some(height) if height <= 1080 => format!(
+            "bv*[vcodec^=avc1][height<={height}]+ba[acodec^=mp4a]/\
+             bv*[vcodec^=avc1][height<={height}]+ba/\
+             bv*[height<={height}]+ba/b[height<={height}]/b"
+        ),
+        Some(height) => format!(
+            "bv*[height<={height}]+ba[acodec^=mp4a]/\
+             bv*[height<={height}]+ba/b[height<={height}]/b"
+        ),
+        None => "bv*+ba[acodec^=mp4a]/bv*+ba/b".to_string(),
     };
-    let mut args = vec![
+    vec![
         "-f".to_string(),
         filter,
         "--merge-output-format".to_string(),
         "mp4".to_string(),
-    ];
-    // Hasta 1080p se prefiere H.264/AAC para que el MP4 se abra en cualquier sitio.
-    if height.map(|value| value <= 1080).unwrap_or(true) {
-        args.push("-S".to_string());
-        args.push("vcodec:h264,acodec:aac".to_string());
-    }
-    args
+    ]
 }
 
 fn audio_args(format: &str, quality: Option<&str>) -> Vec<String> {
@@ -451,6 +465,11 @@ pub async fn start_download(
         .map_err(|e| format!("No se pudo crear la carpeta de descarga: {e}"))?;
 
     let args = build_args(&dir, &req)?;
+    // Un reintento reutiliza el jobId: limpia una cancelación anterior antes
+    // de arrancar. A partir de aquí, si llega una cancelación se respeta.
+    if let Ok(mut cancelled) = state.cancelled.lock() {
+        cancelled.remove(&req.job_id);
+    }
     let mut cmd = Command::new(&ytdlp);
     cmd.args(&args)
         .stdout(std::process::Stdio::piped())
@@ -469,13 +488,21 @@ pub async fn start_download(
     if let Ok(mut children) = state.children.lock() {
         children.insert(req.job_id.clone(), pid);
     }
-    if let Ok(mut cancelled) = state.cancelled.lock() {
-        cancelled.remove(&req.job_id);
+    // Si se canceló justo entre el invoke y el spawn, mata el proceso ya.
+    // La marca se deja puesta para que el lector de stdout/stderr la vea.
+    let cancelled_now = state
+        .cancelled
+        .lock()
+        .map(|guard| guard.contains(&req.job_id))
+        .unwrap_or(false);
+    if cancelled_now {
+        taskkill(pid);
     }
 
     let job_id = req.job_id.clone();
     let output_dir = req.output_dir.clone();
     let title = req.title.clone().unwrap_or_default();
+    let editor_ready = req.editor_ready;
     let children = state.children.clone();
     let cancelled = state.cancelled.clone();
     let app_handle = app.clone();
@@ -492,9 +519,9 @@ pub async fn start_download(
         });
 
         let status = child.wait().await;
-        let filepath = match out_task {
-            Some(task) => task.await.ok().flatten(),
-            None => None,
+        let filepaths = match out_task {
+            Some(task) => task.await.ok().unwrap_or_default(),
+            None => Vec::new(),
         };
         let stderr_tail = match err_task {
             Some(task) => task.await.unwrap_or_default(),
@@ -517,11 +544,71 @@ pub async fn start_download(
 
         match status {
             Ok(status) if status.success() => {
+                let mut final_path = filepaths.last().cloned();
+
+                if editor_ready {
+                    for path in &filepaths {
+                        let already_cancelled = cancelled
+                            .lock()
+                            .map(|guard| guard.contains(&job_id))
+                            .unwrap_or(false);
+                        if already_cancelled {
+                            if let Ok(mut guard) = cancelled.lock() {
+                                guard.remove(&job_id);
+                            }
+                            let _ = app_handle
+                                .emit("job://cancelled", serde_json::json!({ "jobId": job_id }));
+                            return;
+                        }
+
+                        match compat::ensure_editor_ready(
+                            &app_handle,
+                            &job_id,
+                            &children,
+                            &cancelled,
+                            Path::new(path),
+                        )
+                        .await
+                        {
+                            Ok(ready) => {
+                                final_path = Some(ready.to_string_lossy().to_string());
+                            }
+                            Err(compat::EnsureError::Cancelled) => {
+                                let _ = app_handle.emit(
+                                    "job://cancelled",
+                                    serde_json::json!({ "jobId": job_id }),
+                                );
+                                return;
+                            }
+                            Err(error) => {
+                                let _ = app_handle.emit(
+                                    "job://error",
+                                    serde_json::json!({
+                                        "jobId": job_id,
+                                        "message": error.message(),
+                                    }),
+                                );
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                let cancelled_at_end = cancelled
+                    .lock()
+                    .map(|mut guard| guard.remove(&job_id))
+                    .unwrap_or(false);
+                if cancelled_at_end {
+                    let _ = app_handle
+                        .emit("job://cancelled", serde_json::json!({ "jobId": job_id }));
+                    return;
+                }
+
                 let _ = app_handle.emit(
                     "job://done",
                     serde_json::json!({
                         "jobId": job_id,
-                        "filepath": filepath,
+                        "filepath": final_path,
                         "outputDir": output_dir,
                         "title": title,
                     }),
@@ -620,9 +707,9 @@ fn emit_progress(app: &AppHandle, job_id: &str, rest: &str) {
     );
 }
 
-async fn read_stdout(app: AppHandle, job_id: String, stdout: ChildStdout) -> Option<String> {
+async fn read_stdout(app: AppHandle, job_id: String, stdout: ChildStdout) -> Vec<String> {
     let mut lines = BufReader::new(stdout).lines();
-    let mut filepath = None;
+    let mut filepaths = Vec::new();
 
     while let Ok(Some(line)) = lines.next_line().await {
         let line = line.trim();
@@ -645,7 +732,7 @@ async fn read_stdout(app: AppHandle, job_id: String, stdout: ChildStdout) -> Opt
             );
         } else if let Some(path) = line.strip_prefix("FILE|") {
             let path = path.trim().to_string();
-            filepath = Some(path.clone());
+            filepaths.push(path.clone());
             let _ = app.emit(
                 "job://log",
                 serde_json::json!({ "jobId": job_id, "line": format!("Guardado: {path}") }),
@@ -658,7 +745,7 @@ async fn read_stdout(app: AppHandle, job_id: String, stdout: ChildStdout) -> Opt
         }
     }
 
-    filepath
+    filepaths
 }
 
 async fn read_stderr(app: AppHandle, job_id: String, stderr: ChildStderr) -> Vec<String> {
@@ -790,7 +877,7 @@ pub async fn preview_stream(
 
 #[cfg(test)]
 mod tests {
-    use super::{clip_label, format_clock};
+    use super::{clip_label, format_clock, video_args};
 
     #[test]
     fn format_clock_incluye_milisegundos() {
@@ -805,5 +892,24 @@ mod tests {
             clip_label(0.0, 90.5),
             "00-00-00.000_00-01-30.500"
         );
+    }
+
+    #[test]
+    fn hasta_1080_se_exige_avc1_sin_ordenar_por_audio() {
+        let args = video_args(Some(1080));
+        // Un `-S acodec:aac` suelto hace que `bv*` elija el MP4 combinado de
+        // 360p; la preferencia de audio va dentro del filtro.
+        assert!(!args.iter().any(|arg| arg.as_str() == "-S"));
+        let filter = &args[1];
+        assert!(filter.contains("[vcodec^=avc1]"));
+        assert!(filter.contains("[acodec^=mp4a]"));
+    }
+
+    #[test]
+    fn mas_de_1080_no_limita_el_codec() {
+        let args = video_args(Some(2160));
+        let filter = &args[1];
+        assert!(!filter.contains("[vcodec^=avc1]"));
+        assert!(filter.contains("[height<=2160]"));
     }
 }

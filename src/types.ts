@@ -73,8 +73,10 @@ export interface Settings extends CookiesSettings {
   concurrency: number;
   rateLimit: string;
   extraArgs: string;
-  /** Deja los vídeos y clips en H.264/AAC (compatible con Premiere). */
-  editorReady: boolean;
+  /** Copia que se crea para editar. El máster se descarga en máxima calidad. */
+  editorProfile: EditorProfileId;
+  /** Conservar el máster descargado junto a la copia de edición. */
+  keepMaster: boolean;
 }
 
 export interface MediaEntry {
@@ -94,6 +96,13 @@ export interface LayoutState {
 }
 
 export type ToolKind = "video" | "audio";
+
+/** Perfil de la copia que se entrega al editor. */
+export type EditorProfileId =
+  | "premiere-1080"
+  | "premiere-4k"
+  | "prores-4k"
+  | "original";
 
 /** De dónde sale el archivo: un enlace (yt-dlp) o el disco. */
 export type SourceKind = "url" | "file";
@@ -163,8 +172,10 @@ export interface DownloadRequest {
   clipEnd: number | null;
   /** Recodificar para cortar en el fotograma exacto. */
   precise: boolean;
-  /** Deja el archivo en H.264/AAC (compatible con editores). */
-  editorReady: boolean;
+  /** Perfil de la copia para editores. */
+  editorProfile: EditorProfileId;
+  /** Conservar el máster descargado. */
+  keepMaster: boolean;
 }
 
 export interface Clip {
@@ -245,7 +256,9 @@ export interface Job {
   filePercent?: number;
   /** El archivo ya existía en la carpeta y yt-dlp no lo volvió a descargar. */
   skipped?: boolean;
-  /** Se está convirtiendo a H.264/AAC para editores. */
+  /** Ruta del máster descargado, si se conserva junto a la copia. */
+  masterPath?: string | null;
+  /** Se está preparando la copia para edición. */
   converting?: boolean;
   /** 0–100 de la conversión en curso. */
   convertPercent?: number;

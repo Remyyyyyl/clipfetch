@@ -1,4 +1,22 @@
-import type { YtDlpInfo } from "../types";
+import type { EditorProfileId, YtDlpInfo } from "../types";
+
+export const EDITOR_PROFILES: { value: EditorProfileId; label: string }[] = [
+  { value: "premiere-1080", label: "Premiere 1080p (H.264)" },
+  { value: "premiere-4k", label: "Premiere 4K (H.264, experimental)" },
+  { value: "prores-4k", label: "Premiere 4K (ProRes 422)" },
+  { value: "original", label: "Sin copia (original)" },
+];
+
+export function isEditorProfile(value: string): value is EditorProfileId {
+  return EDITOR_PROFILES.some((profile) => profile.value === value);
+}
+
+export function editorProfileLabel(value: string): string {
+  return (
+    EDITOR_PROFILES.find((profile) => profile.value === value)?.label ??
+    "Premiere 1080p (H.264)"
+  );
+}
 
 export const VIDEO_PRESETS = [
   { value: "2160", label: "MP4 2160p" },

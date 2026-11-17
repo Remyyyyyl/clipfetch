@@ -87,6 +87,7 @@ interface JobProgressPayload {
 interface JobDonePayload {
   jobId: string;
   filepath: string | null;
+  masterPath?: string | null;
   outputDir: string;
   title: string;
 }
@@ -104,6 +105,24 @@ interface JobLogPayload {
 interface JobPostProcessPayload {
   jobId: string;
   percent: number | null;
+}
+
+interface PrepareDonePayload {
+  id: string;
+  edit: string;
+  master: string | null;
+}
+
+interface PrepareErrorPayload {
+  id: string;
+  message: string;
+}
+
+interface PrepareState {
+  id: string;
+  path: string;
+  percent: number;
+  status: "running" | "done";
 }
 
 function describePreviewProgress(
@@ -160,6 +179,8 @@ function App() {
   const [globalInfo, setGlobalInfo] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyReady, setHistoryReady] = useState(false);
+  const [prepare, setPrepare] = useState<PrepareState | null>(null);
+  const [mediaRefresh, setMediaRefresh] = useState(0);
   const [layout, setLayout] = useState<LayoutState>(DEFAULT_LAYOUT);
   const appRef = useRef<HTMLDivElement | null>(null);
   const resizeRef = useRef<{
@@ -181,6 +202,7 @@ function App() {
   const analyzeTicketRef = useRef(0);
   const settingsRef = useRef<Settings | null>(null);
   const logBufferRef = useRef<LogBuffer | null>(null);
+  const prepareRef = useRef<PrepareState | null>(null);
 
   const editorRef = useRef<EditorHandle | null>(null);
   const [clipSnapshot, setClipSnapshot] = useState<Clip[]>([]);
@@ -363,6 +385,7 @@ function App() {
                     speed: null,
                     eta: null,
                     filepath: payload.filepath ?? job.filepath,
+                    masterPath: payload.masterPath ?? null,
                     outputDir: payload.outputDir,
                   }
                 : job,
@@ -389,6 +412,17 @@ function App() {
       unlisteners.push(
         await listen<JobPostProcessPayload>("job://postprocess", (event) => {
           const { jobId, percent } = event.payload;
+          const activePrepare = prepareRef.current;
+          if (activePrepare && activePrepare.id === jobId) {
+            const next =
+              percent === null || !Number.isFinite(percent)
+                ? activePrepare.percent
+                : Math.round(Math.max(0, Math.min(100, percent)));
+            const updated = { ...activePrepare, percent: next };
+            prepareRef.current = updated;
+            setPrepare(updated);
+            return;
+          }
           setJobs((previous) =>
             previous.map((job) => {
               if (
@@ -445,6 +479,39 @@ function App() {
           }
 
           buffer?.push(jobId, line);
+        }),
+      );
+
+      unlisteners.push(
+        await listen<PrepareDonePayload>("prepare://done", (event) => {
+          const payload = event.payload;
+          if (!prepareRef.current || prepareRef.current.id !== payload.id) return;
+          prepareRef.current = null;
+          setPrepare((previous) =>
+            previous && previous.id === payload.id
+              ? { ...previous, status: "done", percent: 100 }
+              : previous,
+          );
+          setGlobalInfo(`Copia para edición lista: ${payload.edit}`);
+          setMediaRefresh((value) => value + 1);
+        }),
+      );
+
+      unlisteners.push(
+        await listen<PrepareErrorPayload>("prepare://error", (event) => {
+          if (!prepareRef.current || prepareRef.current.id !== event.payload.id) return;
+          prepareRef.current = null;
+          setPrepare(null);
+          setGlobalError(event.payload.message);
+        }),
+      );
+
+      unlisteners.push(
+        await listen<{ id: string }>("prepare://cancelled", (event) => {
+          if (!prepareRef.current || prepareRef.current.id !== event.payload.id) return;
+          prepareRef.current = null;
+          setPrepare(null);
+          setGlobalInfo("Preparación cancelada.");
         }),
       );
 
@@ -537,7 +604,8 @@ function App() {
             clipStart: next.request.clipStart ?? 0,
             clipEnd: next.request.clipEnd ?? 0,
             precise: next.request.precise,
-            editorReady: next.request.editorReady,
+            editorProfile: next.request.editorProfile,
+            keepMaster: next.request.keepMaster,
           },
         })
       : invoke<string>("start_download", { req: next.request });
@@ -1236,7 +1304,8 @@ function App() {
       clipStart: item.clip?.start ?? null,
       clipEnd: item.clip?.end ?? null,
       precise: item.precise,
-      editorReady: conf.editorReady,
+      editorProfile: conf.editorProfile,
+      keepMaster: conf.keepMaster,
     };
 
     return {
@@ -1369,6 +1438,44 @@ function App() {
     } catch (error) {
       setGlobalError(safeMessage(error));
     }
+  };
+
+  const prepareFile = (path: string) => {
+    if (!settings) return;
+    if (settings.editorProfile === "original") {
+      setGlobalError("Elige un perfil de edición en Ajustes antes de preparar el archivo.");
+      return;
+    }
+    if (prepareRef.current) {
+      setGlobalInfo("Ya hay una preparación en curso.");
+      return;
+    }
+    const id = crypto.randomUUID();
+    const next: PrepareState = { id, path, percent: 0, status: "running" };
+    prepareRef.current = next;
+    setPrepare(next);
+    setGlobalError("");
+    setGlobalInfo("Preparando copia para edición…");
+    void invoke<string>("start_prepare", {
+      req: {
+        id,
+        path,
+        profile: settings.editorProfile,
+        keepMaster: settings.keepMaster,
+      },
+    }).catch((error) => {
+      prepareRef.current = null;
+      setPrepare(null);
+      setGlobalError(safeMessage(error));
+    });
+  };
+
+  const cancelPrepare = () => {
+    const current = prepareRef.current;
+    if (!current) return;
+    void invoke("cancel_download", { jobId: current.id }).catch((error) => {
+      setGlobalError(safeMessage(error));
+    });
   };
 
   const pickFolder = async () => {
@@ -1738,7 +1845,8 @@ function App() {
               preset={preset}
               presetOptions={presets}
               onPresetChange={changePreset}
-              editorReady={settings.editorReady}
+              editorProfile={settings.editorProfile}
+              keepMaster={settings.keepMaster}
               outputDir={settings.outputDir}
               onOutputDirChange={(value) => updateSettings({ outputDir: value })}
               onPickFolder={pickFolder}
@@ -1759,6 +1867,11 @@ function App() {
             <MediaBrowser
               root={settings.outputDir}
               onOpenFile={(path) => void openLocalPath(path)}
+              onPrepareFile={prepareFile}
+              onCancelPrepare={cancelPrepare}
+              preparingPath={prepare?.status === "running" ? prepare.path : null}
+              preparePercent={prepare?.percent ?? 0}
+              refreshToken={mediaRefresh}
             />
           </div>
 

@@ -1,5 +1,5 @@
 import type { Settings } from "../types";
-import { VIDEO_PRESETS } from "./format";
+import { isEditorProfile, VIDEO_PRESETS } from "./format";
 import { loadSection, saveSection } from "./persistence";
 
 export const SETTINGS_VERSION = 1;
@@ -13,7 +13,8 @@ export const DEFAULT_SETTINGS: Settings = {
   extraArgs: "",
   cookiesMode: "none",
   cookiesPath: "",
-  editorReady: true,
+  editorProfile: "premiere-1080",
+  keepMaster: true,
 };
 
 const COOKIE_MODES = new Set(["none", "firefox", "file"]);
@@ -29,6 +30,8 @@ function sanitize(value: unknown): Settings | null {
   const concurrency = Number(raw.concurrency);
   const cookiesMode = asString(raw.cookiesMode, DEFAULT_SETTINGS.cookiesMode);
   const preset = asString(raw.preset, DEFAULT_SETTINGS.preset);
+  const editorProfile = asString(raw.editorProfile, "");
+  const keepMaster = raw.keepMaster !== false;
 
   return {
     outputDir: asString(raw.outputDir, DEFAULT_SETTINGS.outputDir),
@@ -42,7 +45,13 @@ function sanitize(value: unknown): Settings | null {
     extraArgs: asString(raw.extraArgs, DEFAULT_SETTINGS.extraArgs),
     cookiesMode: (COOKIE_MODES.has(cookiesMode) ? cookiesMode : "none") as Settings["cookiesMode"],
     cookiesPath: asString(raw.cookiesPath, DEFAULT_SETTINGS.cookiesPath),
-    editorReady: raw.editorReady !== false,
+    // Migración desde el booleano «editorReady» de la 1.3.
+    editorProfile: isEditorProfile(editorProfile)
+      ? editorProfile
+      : raw.editorReady === false
+        ? "original"
+        : DEFAULT_SETTINGS.editorProfile,
+    keepMaster,
   };
 }
 

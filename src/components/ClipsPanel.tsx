@@ -294,7 +294,7 @@ export function ClipsPanel({
                         {job.skipped && job.status === "completed"
                           ? "Ya existía"
                           : job.converting
-                            ? "Convirtiendo a H.264"
+                            ? "Preparando copia para edición"
                             : job.request.source === "file" && job.status === "downloading"
                               ? "Cortando"
                               : STATUS_LABELS[job.status]}
@@ -349,6 +349,19 @@ export function ClipsPanel({
                             <Icon name="external" size={12} />
                           </button>
                         )}
+                        {job.status === "completed" &&
+                          job.masterPath &&
+                          job.masterPath !== job.filepath && (
+                            <button
+                              type="button"
+                              className="icon-button"
+                              onClick={() => onRevealFile(job.masterPath as string)}
+                              aria-label={`Mostrar máster de ${job.title}`}
+                              title="Mostrar máster"
+                            >
+                              <Icon name="film" size={12} />
+                            </button>
+                          )}
                         <button
                           type="button"
                           className="icon-button"

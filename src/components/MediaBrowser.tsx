@@ -9,6 +9,31 @@ import { Icon } from "./Icon";
 interface MediaBrowserProps {
   root: string;
   onOpenFile: (path: string) => void;
+  onPrepareFile?: (path: string) => void;
+  onCancelPrepare?: () => void;
+  preparingPath?: string | null;
+  preparePercent?: number;
+  refreshToken?: number;
+}
+
+const VIDEO_EXTENSIONS = new Set([
+  "mp4",
+  "m4v",
+  "mov",
+  "mkv",
+  "webm",
+  "avi",
+  "mts",
+  "m2ts",
+  "ts",
+  "flv",
+  "wmv",
+  "ogv",
+]);
+
+function isVideoName(name: string): boolean {
+  const extension = name.split(".").pop()?.toLowerCase() ?? "";
+  return VIDEO_EXTENSIONS.has(extension);
 }
 
 function parentPath(path: string): string | null {
@@ -34,7 +59,15 @@ function modifiedLabel(value: number): string {
   }
 }
 
-export function MediaBrowser({ root, onOpenFile }: MediaBrowserProps) {
+export function MediaBrowser({
+  root,
+  onOpenFile,
+  onPrepareFile,
+  onCancelPrepare,
+  preparingPath,
+  preparePercent,
+  refreshToken,
+}: MediaBrowserProps) {
   const [browserRoot, setBrowserRoot] = useState(root);
   const [currentPath, setCurrentPath] = useState(root);
   const [entries, setEntries] = useState<MediaEntry[]>([]);
@@ -72,7 +105,7 @@ export function MediaBrowser({ root, onOpenFile }: MediaBrowserProps) {
       .finally(() => {
         if (requestRef.current === ticket) setLoading(false);
       });
-  }, [currentPath]);
+  }, [currentPath, refreshToken]);
 
   const chooseFolder = async () => {
     try {
@@ -143,7 +176,7 @@ export function MediaBrowser({ root, onOpenFile }: MediaBrowserProps) {
         ) : (
           <ul className="media-list">
             {entries.map((entry) => (
-              <li key={entry.path}>
+              <li key={entry.path} className="media-item">
                 <button
                   type="button"
                   className={`media-row${selected === entry.path ? " is-selected" : ""}`}
@@ -169,6 +202,26 @@ export function MediaBrowser({ root, onOpenFile }: MediaBrowserProps) {
                     {modifiedLabel(entry.modified)}
                   </span>
                 </button>
+                {!entry.isDir && isVideoName(entry.name) && onPrepareFile && (
+                  <button
+                    type="button"
+                    className="button tiny media-prepare"
+                    onClick={() =>
+                      preparingPath === entry.path
+                        ? onCancelPrepare?.()
+                        : onPrepareFile(entry.path)
+                    }
+                    title={
+                      preparingPath === entry.path
+                        ? "Cancelar la preparación"
+                        : "Crear una copia para edición"
+                    }
+                  >
+                    {preparingPath === entry.path
+                      ? `Cancelar ${Math.round(preparePercent ?? 0)}%`
+                      : "Editar"}
+                  </button>
+                )}
               </li>
             ))}
           </ul>
